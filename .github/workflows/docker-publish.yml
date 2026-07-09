@@ -30,7 +30,6 @@ jobs:
           images: fenglibo51/ebook-forge
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix={{branch}}-
 
       - name: Build and push
         uses: docker/build-push-action@v6
