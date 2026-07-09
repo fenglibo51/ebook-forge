@@ -24,7 +24,7 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/yourname/ebook-forge.git
+git clone https://github.com/fenglibo51/ebook-forge.git
 cd ebook-forge
 
 # 编辑 docker-compose.yaml，修改 BOOK_PATH 映射为你本地的电子书目录
