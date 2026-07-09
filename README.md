@@ -23,12 +23,28 @@
 
 ## 快速开始
 
+```yaml
+# docker-compose.yaml
+services:
+  ebook-forge:
+    image: fenglibo51/ebook-forge:latest
+    container_name: ebook-forge
+    ports:
+      - "8505:8000"
+    volumes:
+      - /path/to/your/books:/Book:rw
+      - ./temp:/temp:rw
+    environment:
+      - BOOK_PATH=/Book
+      - TEMP_DIR=/temp
+    restart: unless-stopped
+```
+
+或者从源码构建：
+
 ```bash
 git clone https://github.com/fenglibo51/ebook-forge.git
 cd ebook-forge
-
-# 编辑 docker-compose.yaml，修改 BOOK_PATH 映射为你本地的电子书目录
-
 docker compose up -d --build
 ```
 
