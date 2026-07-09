@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EbookForge · 电子书格式转换</title>
+  <link rel="stylesheet" href="/css/variables.css">
+  <link rel="stylesheet" href="/css/layout.css">
+  <link rel="stylesheet" href="/css/components.css">
+  <link rel="stylesheet" href="/css/pages.css">
+</head>
+<body>
+  <div id="app">
+    <!-- 侧边栏 -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <h1 class="logo">📖 EbookForge</h1>
+        <span class="logo-sub">v1.0</span>
+      </div>
+      <nav class="sidebar-nav">
+        <a class="nav-item active" data-page="convert" href="#convert">
+          <span class="nav-icon">⚡</span>
+          <span class="nav-label">格式转换</span>
+        </a>
+        <a class="nav-item" data-page="library" href="#library">
+          <span class="nav-icon">📚</span>
+          <span class="nav-label">书库浏览</span>
+        </a>
+        <a class="nav-item" data-page="history" href="#history">
+          <span class="nav-icon">📋</span>
+          <span class="nav-label">转换记录</span>
+        </a>
+        <a class="nav-item" data-page="settings" href="#settings">
+          <span class="nav-icon">⚙️</span>
+          <span class="nav-label">设置</span>
+        </a>
+      </nav>
+      <div class="sidebar-footer">
+        <button id="theme-toggle" class="theme-btn" title="切换深色/浅色模式">
+          <span id="theme-icon">🌙</span>
+          <span id="theme-label">深色模式</span>
+        </button>
+        <div class="status-dot" id="calibre-status" title="Calibre 状态">
+          <span class="dot"></span>
+          <span class="status-text">检查中...</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 主内容区 -->
+    <main id="main-content">
+      <!-- 格式转换页 -->
+      <section id="page-convert" class="page active">
+        <div class="page-header">
+          <h2>⚡ 格式转换</h2>
+          <p class="page-desc">选择或上传电子书，快速转换格式</p>
+        </div>
+        <div class="convert-layout">
+          <div class="convert-source">
+            <h3>上传文件</h3>
+            <div class="upload-zone" id="upload-zone">
+              <div class="upload-icon">📤</div>
+              <p>拖拽电子书到此处，或点击选择</p>
+              <p class="upload-hint">支持 EPUB、MOBI、AZW3、PDF、TXT、DOCX、FB2</p>
+              <input type="file" id="file-input" multiple hidden accept=".epub,.mobi,.azw3,.pdf,.txt,.docx,.fb2">
+            </div>
+            <div id="upload-list" class="upload-list"></div>
+            <div class="param-group" style="margin-top:12px">
+              <label>上传到</label>
+              <div style="display:flex;gap:6px">
+                <input type="text" id="upload-target" class="input" value="temp" placeholder="temp = 临时目录，或输入 /Book 下的路径" style="flex:1">
+                <button id="btn-pick-target" class="btn btn-sm" title="从书库选择目录">📂 选择</button>
+              </div>
+              <div style="font-size:11px;color:var(--text-muted);margin-top:4px">输入 temp 为临时目录，或输入自己的文件目录名</div>
+            </div>
+          </div>
+          <div class="convert-params">
+            <h3>转换设置</h3>
+            <div class="param-group">
+              <label>目标格式</label>
+              <div class="format-grid" id="target-formats">
+                <button class="format-btn" data-format="epub">EPUB</button>
+                <button class="format-btn" data-format="mobi">MOBI</button>
+                <button class="format-btn" data-format="azw3">AZW3</button>
+                <button class="format-btn" data-format="pdf">PDF</button>
+                <button class="format-btn" data-format="txt">TXT</button>
+                <button class="format-btn" data-format="docx">DOCX</button>
+                <button class="format-btn" data-format="fb2">FB2</button>
+              </div>
+            </div>
+            <div id="convert-queue" class="convert-queue">
+              <h4>待转换文件 (<span id="queue-count">0</span>)</h4>
+              <div id="queue-list" class="queue-list"></div>
+            </div>
+            <button id="btn-start-convert" class="btn btn-primary btn-block" disabled>
+              🚀 开始转换
+            </button>
+          </div>
+        </div>
+        <!-- 进度和日志 -->
+        <div id="progress-area" class="progress-area" style="display:none">
+          <div class="progress-header">
+            <h3>转换进度</h3>
+            <span id="progress-stats" class="progress-stats">0/0</span>
+          </div>
+          <div class="progress-bar-track">
+            <div class="progress-bar-fill" id="progress-fill" style="width:0%"></div>
+          </div>
+          <div class="progress-log" id="progress-log"></div>
+          <div class="progress-summary" id="progress-summary" style="display:none">
+            <span id="summary-success">成功: 0</span>
+            <span id="summary-failed">失败: 0</span>
+            <span id="summary-time">用时: --</span>
+            <button id="btn-retry-failed" class="btn btn-sm">重试失败项</button>
+            <button id="btn-clear-local-log" class="btn btn-sm btn-ghost">清除列表</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 书库浏览页 -->
+      <section id="page-library" class="page">
+        <div class="page-header">
+          <h2>📚 书库浏览</h2>
+          <p class="page-desc">浏览 /Book 目录，选择文件进行批量操作</p>
+        </div>
+        <div class="library-toolbar">
+          <div class="breadcrumb" id="library-breadcrumb">
+            <span class="crumb-item" data-path="">/Book</span>
+          </div>
+          <div class="toolbar-actions">
+            <input type="text" id="library-search" class="input input-sm" placeholder="筛选文件名...">
+            <select id="library-filter" class="input input-sm">
+              <option value="">全部格式</option>
+              <option value="epub">EPUB</option>
+              <option value="mobi">MOBI</option>
+              <option value="azw3">AZW3</option>
+              <option value="pdf">PDF</option>
+              <option value="txt">TXT</option>
+              <option value="docx">DOCX</option>
+              <option value="fb2">FB2</option>
+            </select>
+            <button id="btn-select-all" class="btn btn-sm">☑️ 全选</button>
+            <button id="btn-refresh" class="btn btn-sm">🔄 刷新</button>
+          </div>
+        </div>
+        <div class="library-batch-bar" id="batch-bar" style="display:none">
+          <span>已选 <strong id="batch-count">0</strong> 项</span>
+          <div class="batch-actions">
+            <select id="batch-format" class="input input-sm">
+              <option value="">转换格式...</option>
+              <option value="epub">→ EPUB</option>
+              <option value="mobi">→ MOBI</option>
+              <option value="azw3">→ AZW3</option>
+              <option value="pdf">→ PDF</option>
+              <option value="txt">→ TXT</option>
+              <option value="docx">→ DOCX</option>
+              <option value="fb2">→ FB2</option>
+            </select>
+            <label class="checkbox-label" style="font-size:12px;white-space:nowrap">
+              <input type="checkbox" id="batch-keep-source" checked>
+              <span>保留原文件</span>
+            </label>
+            <button id="btn-batch-convert" class="btn btn-sm">批量转换</button>
+            <button id="btn-batch-rename" class="btn btn-sm">批量重命名</button>
+            <button class="btn btn-sm btn-ghost" id="btn-clear-selection">取消选择</button>
+          </div>
+        </div>
+        <div class="library-grid" id="library-grid">
+          <div class="loading">加载中...</div>
+        </div>
+        <!-- 书库浏览进度 -->
+        <div id="library-progress" class="progress-area" style="display:none;margin-top:16px">
+          <div class="progress-header">
+            <h3>批量转换进度</h3>
+            <span id="lib-progress-stats" class="progress-stats">0/0</span>
+          </div>
+          <div class="progress-bar-track">
+            <div class="progress-bar-fill" id="lib-progress-fill" style="width:0%"></div>
+          </div>
+          <div class="progress-log" id="lib-progress-log"></div>
+          <div class="progress-summary" id="lib-progress-summary" style="display:none">
+            <span id="lib-summary-ok">成功: 0</span>
+            <span id="lib-summary-fail">失败: 0</span>
+            <span id="lib-summary-time">用时: --</span>
+            <button id="btn-lib-retry" class="btn btn-sm">重试失败项</button>
+            <button id="btn-lib-close-progress" class="btn btn-sm btn-ghost">关闭</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 转换记录页 -->
+      <section id="page-history" class="page">
+        <div class="page-header">
+          <h2>📋 转换记录</h2>
+          <p class="page-desc">查看所有转换任务的历史和状态</p>
+        </div>
+        <div class="history-toolbar">
+          <div class="history-stats" id="history-stats">
+            <span>总计: <strong id="hist-total">0</strong></span>
+            <span class="stat-ok">成功: <strong id="hist-ok">0</strong></span>
+            <span class="stat-fail">失败: <strong id="hist-fail">0</strong></span>
+            <span class="stat-run">运行中: <strong id="hist-run">0</strong></span>
+          </div>
+          <div class="toolbar-actions">
+            <select id="history-filter" class="input input-sm">
+              <option value="">全部状态</option>
+              <option value="success">成功</option>
+              <option value="failed">失败</option>
+              <option value="running">运行中</option>
+              <option value="pending">排队中</option>
+            </select>
+            <button id="btn-refresh-history" class="btn btn-sm">🔄 刷新</button>
+            <button id="btn-clear-history" class="btn btn-sm" style="color:var(--error)">🗑️ 清除全部</button>
+          </div>
+        </div>
+        <div class="history-table-wrap" style="max-height:60vh;overflow-y:auto">
+          <table class="history-table" id="history-table">
+            <thead>
+              <tr>
+                <th>状态</th>
+                <th>源文件</th>
+                <th>目标格式</th>
+                <th>时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="history-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 设置页 -->
+      <section id="page-settings" class="page">
+        <div class="page-header">
+          <h2>⚙️ 设置</h2>
+          <p class="page-desc">自定义 EbookForge 的行为</p>
+        </div>
+        <div class="settings-section">
+          <h3>🗑️ 临时文件</h3>
+          <p class="setting-desc" id="temp-stats-info">加载中...</p>
+          <button class="btn btn-sm" id="btn-temp-clear" style="color:var(--error)">清空临时文件</button>
+        </div>
+        <div class="settings-section">
+          <h3>🌙 主题</h3>
+          <p class="setting-desc">选择界面主题</p>
+          <div class="theme-selector">
+            <button class="theme-option active" data-theme="dark">🌙 深色模式</button>
+            <button class="theme-option" data-theme="light">☀️ 浅色模式</button>
+          </div>
+        </div>
+        <div class="settings-section">
+          <h3>📖 关于 EbookForge</h3>
+          <p class="setting-desc">EbookForge v1.0 — 电子书格式互转 Web 工具</p>
+          <p class="setting-desc" style="font-size:12px;color:var(--text-muted);line-height:1.8">
+            <strong>后端</strong>: Python • FastAPI • Calibre ebook-convert<br>
+            <strong>前端</strong>: 纯 HTML/CSS/JS 单页应用<br>
+            <strong>部署</strong>: Docker • Docker Compose<br>
+            <strong>协议</strong>: GPLv3（Calibre 引擎）<br><br>
+            📂 书库挂载: <span id="about-book-path" style="color:var(--text-primary)">--</span><br>
+            ⚡ 转换引擎: <span id="about-calibre" class="about-status">Calibre: 检测中...</span>
+          </p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Toast 通知 -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- 重命名弹窗 -->
+  <div id="rename-modal" class="modal" style="display:none">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>✏️ 批量重命名</h3>
+        <button class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="param-group">
+          <label>命名规则</label>
+          <div class="naming-presets">
+            <button class="preset-btn active" data-rule="{title}.{author}.{ext}">书名.作者.格式</button>
+            <button class="preset-btn" data-rule="{title}.{ext}">书名.格式</button>
+          </div>
+          <input type="text" id="rename-rule" class="input" value="{title}.{author}.{ext}">
+        </div>
+        <div class="rename-preview-list" id="rename-preview">
+          <div class="loading">计算中...</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="btn-rename-cancel">取消</button>
+        <button class="btn btn-primary" id="btn-rename-confirm">✅ 确认重命名</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 目录选择弹窗 -->
+  <div id="dir-picker-modal" class="modal" style="display:none">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content" style="max-width:480px">
+      <div class="modal-header">
+        <h3>📂 选择目标目录</h3>
+        <button class="modal-close" onclick="document.getElementById('dir-picker-modal').style.display='none'">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="breadcrumb" id="dir-picker-breadcrumb">
+          <span class="crumb-item" data-path="" style="pointer-events:none;color:var(--text-primary)">Book</span>
+        </div>
+        <div class="picker-list" id="dir-picker-list" style="max-height:300px;overflow-y:auto;border:1px solid var(--border-color);border-radius:var(--radius);background:var(--bg-tertiary);margin-top:8px">
+          <div class="loading">加载中...</div>
+        </div>
+        <div id="dir-picker-current" style="font-size:12px;color:var(--text-muted);margin-top:8px"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="document.getElementById('dir-picker-modal').style.display='none'">取消</button>
+        <button class="btn btn-primary" id="dir-picker-select" style="display:none" onclick="document.getElementById('upload-target').value=this.dataset.path;document.getElementById('dir-picker-modal').style.display='none'">✅ 选择此目录</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/theme.js"></script>
+  <script src="/js/components/toast.js"></script>
+  <script src="/js/components/sidebar.js"></script>
+  <script src="/js/pages/convert.js"></script>
+  <script src="/js/pages/library.js"></script>
+  <script src="/js/pages/history.js"></script>
+  <script src="/js/pages/settings.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

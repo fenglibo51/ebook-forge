@@ -1,0 +1,18 @@
+services:
+  ebook-forge:
+    build: .
+    container_name: ebook-forge
+    ports:
+      - "8505:8000"
+    volumes:
+      - /volume1/Book:/Book:rw
+      - /volume1/work/projects/public/ebook-forge/temp:/temp:rw
+      - ebook-forge-data:/data
+    environment:
+      - BOOK_PATH=/Book
+      - TEMP_DIR=/temp
+      - CLEANUP_HOURS=24
+    restart: unless-stopped
+
+volumes:
+  ebook-forge-data:
