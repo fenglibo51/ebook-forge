@@ -15,6 +15,10 @@
 - **历史记录** — 自动持久化，刷新不丢失（最多保留 500 条）
 - **临时文件管理** — 设置页查看大小，一键清理
 
+![转换记录页](assets/screenshots/history-page.png)
+
+![设置页](assets/screenshots/settings-page.png)
+
 ## 技术栈
 
 | 层 | 选型 |
