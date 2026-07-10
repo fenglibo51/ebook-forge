@@ -5,6 +5,8 @@
 ## 功能
 
 - **格式转换** — EPUB、MOBI、AZW3、PDF、TXT、DOCX、FB2 互转
+
+![格式转换页](assets/screenshots/convert-page.png)
 - **上传转换** — 上传文件 → 选格式 → 转换 → 下载
 - **书库管理** — 浏览本地书库目录，勾选批量转换
 - **实时进度** — 进度条 + 日志，不刷屏
