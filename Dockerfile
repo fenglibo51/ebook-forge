@@ -5,6 +5,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     calibre=8.5.0* \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Calibre 的 PDF 输出依赖 QtWebEngine，root 容器必须禁用沙箱
+ENV QTWEBENGINE_DISABLE_SANDBOX=1
+
 WORKDIR /app
 
 COPY backend/requirements.txt .

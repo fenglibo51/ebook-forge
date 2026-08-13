@@ -14,6 +14,8 @@ SUPPORTED_FORMATS = {
     "txt": "纯文本",
     "docx": "DOCX (Word)",
     "fb2": "FictionBook",
+    "zip": "ZIP (漫画压缩包)",
+    "cbz": "CBZ (漫画)",
 }
 
 # Calibre can convert FROM -> TO
@@ -25,6 +27,8 @@ CONVERT_MATRIX = {
     "txt":  ["epub", "mobi", "azw3", "pdf", "docx", "fb2"],
     "docx": ["epub", "mobi", "azw3", "pdf", "txt", "fb2"],
     "fb2":  ["epub", "mobi", "azw3", "pdf", "txt", "docx"],
+    "zip":  ["epub", "pdf", "cbz"],
+    "cbz":  ["epub", "pdf"],
 }
 
 DEFAULT_NAMING_RULE = "{title}.{author}.{ext}"

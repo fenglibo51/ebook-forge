@@ -82,14 +82,58 @@ def convert_file(source_path: str, target_format: str, naming_rule: str = "{titl
     if target_format not in SUPPORTED_FORMATS:
         return {"success": False, "error": f"不支持目标格式: {target_format}"}
     
+    is_comic = ext in ("zip", "cbz")
+    
+    # 漫画 → CBZ：Calibre 不支持输出 CBZ（No plugin to handle output format: cbz），直接复制改名
+    if target_format == "cbz":
+        if not is_comic:
+            return {"success": False, "error": "只有漫画压缩包（ZIP/CBZ）能转换为 CBZ"}
+        meta = {"title": _guess_title_from_filename(source.name), "author": None, "year": None}
+        if use_original_name:
+            new_name = source.stem
+            new_name = re.sub(r'_\d{14}$', '', new_name)
+            new_name = re.sub(r'_\d{8}$', '', new_name)
+        else:
+            new_name = _apply_naming_rule(naming_rule, meta["title"], "", "", None)
+        output_path = source.parent / f"{new_name}.cbz"
+        if output_path.exists() and not keep_source:
+            output_path.unlink()
+        shutil.copy2(str(source), str(output_path))
+        final_path = output_path
+        if target_dir != "temp" and output_path.exists():
+            book_dest = Path(BOOK_PATH) / target_dir.lstrip("/") / output_path.name
+            book_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(output_path), str(book_dest))
+            final_path = book_dest
+            if str(source).startswith(TEMP_DIR):
+                try: source.unlink()
+                except: pass
+            try: output_path.unlink()
+            except: pass
+        elif not keep_source and str(source).startswith(TEMP_DIR):
+            try: source.unlink()
+            except: pass
+        return {"success": True, "output_path": str(final_path), "metadata": meta}
+    
+    # 漫画 ZIP → EPUB/PDF 等：Calibre 按后缀识别格式，zip 必须先复制成 .cbz 才会走漫画输入路径
+    real_input = source
+    cbz_tmp = None
+    if ext == "zip":
+        cbz_tmp = source.with_suffix(".cbz")
+        if not cbz_tmp.exists():
+            shutil.copy2(str(source), str(cbz_tmp))
+        real_input = cbz_tmp
+    
     # 提取元数据
-    meta = _parse_metadata(str(source))
+    meta = _parse_metadata(str(real_input))
     if not meta.get("title"):
         meta["title"] = _guess_title_from_filename(source.name)
-
+    
     # 生成新文件名
     if use_original_name:
         new_name = source.stem
+        new_name = re.sub(r'_\d{14}$', '', new_name)
+        new_name = re.sub(r'_\d{8}$', '', new_name)
     else:
         new_name = _apply_naming_rule(naming_rule, meta["title"], meta.get("author", ""), "", meta.get("year"))
     output_path = source.parent / f"{new_name}.{target_format}"
@@ -99,9 +143,11 @@ def convert_file(source_path: str, target_format: str, naming_rule: str = "{titl
         output_path.unlink()
     
     try:
+        # PDF 输出依赖 QtWebEngine，root 容器必须禁用沙箱
+        env = {**os.environ, "QTWEBENGINE_DISABLE_SANDBOX": "1"}
         result = subprocess.run(
-            ["ebook-convert", str(source), str(output_path)],
-            capture_output=True, text=True, timeout=300
+            ["ebook-convert", str(real_input), str(output_path)],
+            capture_output=True, text=True, timeout=300, env=env
         )
         
         if result.returncode != 0:
@@ -114,8 +160,7 @@ def convert_file(source_path: str, target_format: str, naming_rule: str = "{titl
         if target_dir != "temp" and output_path.exists():
             book_dest = Path(BOOK_PATH) / target_dir.lstrip("/") / output_path.name
             book_dest.parent.mkdir(parents=True, exist_ok=True)
-            import shutil as sh
-            sh.copy2(str(output_path), str(book_dest))
+            shutil.copy2(str(output_path), str(book_dest))
             final_path = book_dest
             # 清理 temp 中的源文件和输出文件
             if str(source).startswith(TEMP_DIR):
@@ -127,6 +172,11 @@ def convert_file(source_path: str, target_format: str, naming_rule: str = "{titl
         # 上传的文件在 temp 里，永远不删原始书库文件
         if not keep_source and output_path.exists() and str(source).startswith(TEMP_DIR):
             source.unlink()
+        
+        # 清理 zip 转换产生的临时 cbz 副本
+        if cbz_tmp and cbz_tmp.exists() and str(cbz_tmp).startswith(TEMP_DIR):
+            try: cbz_tmp.unlink()
+            except: pass
         
         return {
             "success": True,
