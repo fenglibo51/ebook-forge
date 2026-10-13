@@ -84,6 +84,9 @@ const ConvertPage = {
         document.querySelectorAll(".format-btn").forEach(b => b.classList.remove("active"));
         btn.classList.add("active");
         this.targetFormat = btn.dataset.format;
+        // 选 CBZ 时才显示清晰度（DPI）选项
+        const dpiGroup = document.getElementById("dpi-group");
+        if (dpiGroup) dpiGroup.style.display = this.targetFormat === "cbz" ? "block" : "none";
         this.updateQueue();
       });
     });
@@ -298,16 +301,24 @@ const ConvertPage = {
     btn.textContent = "⏳ 转换中...";
 
     // 构建转换请求
+    const isCbz = this.targetFormat === "cbz";
+    const dpiEl = document.getElementById("cbz-dpi");
+    const fmtEl = document.getElementById("cbz-format");
+    const cbzDpi = (isCbz && dpiEl) ? parseInt(dpiEl.value, 10) : 0;
+    const cbzFmt = (isCbz && fmtEl) ? fmtEl.value : "";
     const convertFiles = [];
     for (let i = 0; i < this.uploadedFiles.length; i++) {
       if (filePaths[i] === null) continue;
-      convertFiles.push({
+      const item = {
         source_path: filePaths[i],
         target_format: this.targetFormat,
         keep_source: true,
         use_original_name: true,
         target_dir: target,
-      });
+      };
+      if (cbzDpi) item.dpi = cbzDpi;
+      if (cbzFmt) item.img_format = cbzFmt;
+      convertFiles.push(item);
     }
 
     if (convertFiles.length === 0) {

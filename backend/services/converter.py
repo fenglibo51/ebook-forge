@@ -2,12 +2,14 @@ import subprocess
 import os
 import re
 import json
+import glob
 import tempfile
 import shutil
+import zipfile
 from pathlib import Path
 from typing import Optional
 
-from ..config import BOOK_PATH, SUPPORTED_FORMATS, TEMP_DIR
+from ..config import BOOK_PATH, SUPPORTED_FORMATS, TEMP_DIR, DEFAULT_CBZ_DPI
 
 
 def _parse_metadata(file_path: str) -> dict:
@@ -67,7 +69,46 @@ def _apply_naming_rule(rule: str, title: str, author: str, ext: str, year: Optio
     return result
 
 
-def convert_file(source_path: str, target_format: str, naming_rule: str = "{title}.{author}.{ext}", keep_source: bool = False, use_original_name: bool = False, target_dir: str = "temp") -> dict:
+def _rasterize_to_cbz(pdf_path: Path, out_cbz: Path, dpi: int = DEFAULT_CBZ_DPI,
+                      img_format: str = "jpeg", quality: int = 85) -> tuple:
+    """把 PDF 每页光栅化成图片并打包为 CBZ。
+
+    Calibre 没有 CBZ 输出插件（No plugin to handle output format: cbz），
+    所以电子书转 CBZ 走这条路径：电子书 → PDF → 图片(每页) → zip 打包。
+
+    img_format: "jpeg"（默认，照片/漫画页体积小）或 "png"（无损，文字/线条图体积小）
+    返回 (成功: bool, 错误信息: str)
+    """
+    base = TEMP_DIR if Path(TEMP_DIR).exists() else None
+    workdir = Path(tempfile.mkdtemp(prefix="cbz_", dir=base))
+    try:
+        ext = "jpg" if img_format == "jpeg" else "png"
+        cmd = ["pdftoppm", "-r", str(dpi)]
+        if img_format == "jpeg":
+            cmd += ["-jpeg", "-jpegopt", f"quality={quality}"]
+        else:
+            cmd += ["-png"]
+        cmd += [str(pdf_path), str(workdir / "page")]
+
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        if r.returncode != 0:
+            return False, (r.stderr.strip() or r.stdout.strip() or "PDF 光栅化失败")
+        pages = sorted(workdir.glob(f"page*.{ext}"))
+        if not pages:
+            return False, "光栅化后没有生成任何页面"
+        with zipfile.ZipFile(str(out_cbz), "w", zipfile.ZIP_DEFLATED) as z:
+            for p in pages:
+                z.write(str(p), p.name)
+        return True, ""
+    except subprocess.TimeoutExpired:
+        return False, "光栅化超时（15 分钟）"
+    except Exception as e:
+        return False, str(e)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def convert_file(source_path: str, target_format: str, naming_rule: str = "{title}.{author}.{ext}", keep_source: bool = False, use_original_name: bool = False, target_dir: str = "temp", dpi: int = DEFAULT_CBZ_DPI, img_format: str = "jpeg") -> dict:
     """
     转换单个电子书文件
     返回: {"success": bool, "output_path": str, "error": str, "metadata": dict}
@@ -84,21 +125,50 @@ def convert_file(source_path: str, target_format: str, naming_rule: str = "{titl
     
     is_comic = ext in ("zip", "cbz")
     
-    # 漫画 → CBZ：Calibre 不支持输出 CBZ（No plugin to handle output format: cbz），直接复制改名
+    # → CBZ
     if target_format == "cbz":
-        if not is_comic:
-            return {"success": False, "error": "只有漫画压缩包（ZIP/CBZ）能转换为 CBZ"}
-        meta = {"title": _guess_title_from_filename(source.name), "author": None, "year": None}
+        if is_comic:
+            # 漫画源：Calibre 没有 CBZ 输出插件，直接复制改名（zip 与 cbz 内容等价）
+            meta = {"title": _guess_title_from_filename(source.name), "author": None, "year": None}
+        else:
+            # 电子书源：Calibre 不能输出 CBZ → 走 电子书→PDF→PNG→CBZ 光栅化
+            meta = _parse_metadata(str(source))
+            if not meta.get("title"):
+                meta["title"] = _guess_title_from_filename(source.name)
+
         if use_original_name:
             new_name = source.stem
             new_name = re.sub(r'_\d{14}$', '', new_name)
             new_name = re.sub(r'_\d{8}$', '', new_name)
         else:
-            new_name = _apply_naming_rule(naming_rule, meta["title"], "", "", None)
+            new_name = _apply_naming_rule(naming_rule, meta["title"], meta.get("author", ""), "", meta.get("year"))
         output_path = source.parent / f"{new_name}.cbz"
         if output_path.exists() and not keep_source:
             output_path.unlink()
-        shutil.copy2(str(source), str(output_path))
+
+        if is_comic:
+            shutil.copy2(str(source), str(output_path))
+        else:
+            # 临时 PDF 放 TEMP_DIR：源文件可能在只读书库目录，且避免并发同名冲突
+            tmp_pdf = Path(TEMP_DIR) / f".{new_name}.{os.getpid()}.__tmp__.pdf"
+            try:
+                env = {**os.environ, "QTWEBENGINE_DISABLE_SANDBOX": "1"}
+                r = subprocess.run(
+                    ["ebook-convert", str(source), str(tmp_pdf)],
+                    capture_output=True, text=True, timeout=900, env=env,
+                )
+                if r.returncode != 0 or not tmp_pdf.exists():
+                    err = (r.stderr.strip() or r.stdout.strip() or "转 PDF 失败")
+                    return {"success": False, "error": err[-800:]}
+                ok, err = _rasterize_to_cbz(tmp_pdf, output_path, dpi, img_format)
+                if not ok:
+                    return {"success": False, "error": err}
+            except subprocess.TimeoutExpired:
+                return {"success": False, "error": "转 PDF 超时（15 分钟）"}
+            finally:
+                try: tmp_pdf.unlink()
+                except: pass
+
         final_path = output_path
         if target_dir != "temp" and output_path.exists():
             book_dest = Path(BOOK_PATH) / target_dir.lstrip("/") / output_path.name
