@@ -19,6 +19,9 @@
 
       // 更新 URL hash
       window.location.hash = pageId;
+
+      // 通知各页面：切换后可按需即时刷新（如转换记录页）
+      window.dispatchEvent(new CustomEvent("hermes:pagechange", { detail: { page: pageId } }));
     }
 
     navItems.forEach(item => {
