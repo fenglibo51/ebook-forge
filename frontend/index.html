@@ -61,8 +61,8 @@
             <div class="upload-zone" id="upload-zone">
               <div class="upload-icon">📤</div>
               <p>拖拽电子书到此处，或点击选择</p>
-              <p class="upload-hint">支持 EPUB、MOBI、AZW3、PDF、TXT、DOCX、FB2、ZIP/CBZ（漫画）</p>
-              <input type="file" id="file-input" multiple hidden accept=".epub,.mobi,.azw3,.pdf,.txt,.docx,.fb2,.zip,.cbz">
+              <p class="upload-hint">支持 EPUB、MOBI、AZW3、PDF、TXT、DOCX、FB2、ZIP/CBZ/CBR/CB7/CBC（漫画）</p>
+              <input type="file" id="file-input" multiple hidden accept=".epub,.mobi,.azw3,.pdf,.txt,.docx,.fb2,.zip,.cbz,.cbr,.cb7,.cbc">
             </div>
             <div id="upload-list" class="upload-list"></div>
             <div class="param-group" style="margin-top:12px">
@@ -141,6 +141,9 @@
               <option value="fb2">FB2</option>
               <option value="zip">ZIP</option>
               <option value="cbz">CBZ</option>
+              <option value="cbr">CBR</option>
+              <option value="cb7">CB7</option>
+              <option value="cbc">CBC</option>
             </select>
             <button id="btn-select-all" class="btn btn-sm">☑️ 全选</button>
             <button id="btn-refresh" class="btn btn-sm">🔄 刷新</button>

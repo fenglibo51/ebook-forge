@@ -165,6 +165,98 @@ def _extract_images_to_cbz(epub_path: Path, out_cbz: Path) -> tuple:
         return False, f"提取图片失败: {e}", 0
 
 
+def _extract_archive_to_cbz(archive: Path, out_cbz: Path) -> tuple:
+    """RAR / 7z 漫画包（cbr / cb7 / cbc）→ CBZ。
+
+    Calibre 只能「读」这些格式（comic_input 的 file_types 含 cbr/cb7/cbc），
+    但没有任何 CBZ 输出插件，所以自己解压取图再原样打包成 zip。
+    用 unar 解压（一个工具同时覆盖 rar / 7z / zip，节省依赖）。
+
+    返回 (成功: bool, 错误信息: str, 页数: int)
+    """
+    base = TEMP_DIR if Path(TEMP_DIR).exists() else None
+    workdir = Path(tempfile.mkdtemp(prefix="arc_", dir=base))
+    try:
+        r = subprocess.run(
+            ["unar", "-quiet", "-force-overwrite", "-output-directory", str(workdir), str(archive)],
+            capture_output=True, text=True, timeout=900,
+        )
+        if r.returncode != 0:
+            err = (r.stderr.strip() or r.stdout.strip() or "解压失败")
+            return False, f"解压失败：{err[:300]}", 0
+
+        # 解压后可能有多层目录，递归收集图片并按路径排序（漫画包通常按序号命名）
+        pages = sorted(p for p in workdir.rglob("*")
+                       if p.is_file() and p.suffix.lower() in IMG_EXTS)
+        if not pages:
+            return False, "压缩包里没有图片，无法转换为 CBZ", 0
+        if len(pages) < 5:
+            return False, f"压缩包里只有 {len(pages)} 张图片，不像是漫画", 0
+
+        with zipfile.ZipFile(str(out_cbz), "w") as zout:
+            for i, p in enumerate(pages, 1):
+                e = p.suffix.lower()
+                comp = zipfile.ZIP_DEFLATED if e == ".png" else zipfile.ZIP_STORED
+                zout.writestr(f"{i:05d}{e}", p.read_bytes(), compress_type=comp)
+        return True, "", len(pages)
+    except subprocess.TimeoutExpired:
+        return False, "解压超时（15 分钟）", 0
+    except FileNotFoundError:
+        return False, "系统缺少 unar 解压工具", 0
+    except Exception as e:
+        return False, f"解压打包失败: {e}", 0
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _extract_pdf_to_cbz(pdf_path: Path, out_cbz: Path) -> tuple:
+    """扫描版 / 图片型漫画 PDF → CBZ：pdfimages -all 无损提取内嵌图片流，原样打包。
+
+    只对「每页是图」的 PDF 有效（扫描或导出的漫画 PDF 都是这种）。
+    矢量 / 文字版 PDF 提取不到图片 —— 明确报错，不做有损渲染（用户定下的原则）。
+
+    返回 (成功: bool, 错误信息: str, 页数: int)
+    """
+    base = TEMP_DIR if Path(TEMP_DIR).exists() else None
+    workdir = Path(tempfile.mkdtemp(prefix="pdf_", dir=base))
+    # pdfimages -all 保持原始编码：JPEG→.jpg、JPEG2000→.jp2、CCITT→.tif、raw→.ppm
+    RASTER = (".jpg", ".jpeg", ".png", ".jp2", ".jpx", ".tif", ".tiff", ".jbig2", ".jb2")
+    RAW = (".ppm", ".pgm")
+    try:
+        r = subprocess.run(
+            ["pdfimages", "-all", str(pdf_path), str(workdir / "pg")],
+            capture_output=True, text=True, timeout=900,
+        )
+        if r.returncode != 0:
+            err = (r.stderr.strip() or r.stdout.strip() or "PDF 解析失败")
+            return False, f"PDF 解析失败：{err[:300]}", 0
+
+        files = sorted(workdir.glob("pg*"))
+        images = [f for f in files if f.suffix.lower() in RASTER]
+        if not images:
+            # 没有常见图片格式时，退一步看 raw 光栅图（FlateDecode 的页面图就是 .ppm）
+            images = [f for f in files if f.suffix.lower() in RAW]
+
+        if not images:
+            return False, ("这个 PDF 里提取不到图片，可能是矢量/文字版 PDF。"
+                           "本功能只支持扫描版漫画 PDF，不做有损渲染"), 0
+        if len(images) < 5:
+            return False, f"PDF 里只提取到 {len(images)} 张图片，不像是漫画", 0
+
+        with zipfile.ZipFile(str(out_cbz), "w") as zout:
+            for i, p in enumerate(images, 1):
+                e = p.suffix.lower()
+                comp = zipfile.ZIP_DEFLATED if e in (".png", ".ppm", ".pgm") else zipfile.ZIP_STORED
+                zout.writestr(f"{i:05d}{e}", p.read_bytes(), compress_type=comp)
+        return True, "", len(images)
+    except subprocess.TimeoutExpired:
+        return False, "PDF 提取超时（15 分钟）", 0
+    except Exception as e:
+        return False, f"PDF 转 CBZ 失败: {e}", 0
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
 def convert_file(source_path: str, target_format: str, naming_rule: str = "{title}.{author}.{ext}", keep_source: bool = False, use_original_name: bool = False, target_dir: str = "temp") -> dict:
     """
     转换单个电子书文件
@@ -180,20 +272,21 @@ def convert_file(source_path: str, target_format: str, naming_rule: str = "{titl
     if target_format not in SUPPORTED_FORMATS:
         return {"success": False, "error": f"不支持目标格式: {target_format}"}
     
-    is_comic = ext in ("zip", "cbz")
-    
+    ZIP_LIKE = ("zip", "cbz")               # 内容本身就是 zip，可直接复制改名
+    ARCHIVE_LIKE = ("cbr", "cb7", "cbc")    # RAR / 7z 等，需解压后重新打包
+    is_comic = ext in ZIP_LIKE or ext in ARCHIVE_LIKE
+
     # → CBZ
     if target_format == "cbz":
         if is_comic:
-            # 漫画压缩包（zip/cbz）：内容等价，直接复制改名
             meta = {"title": _guess_title_from_filename(source.name), "author": None, "year": None}
-        elif ext == "epub":
-            # 漫画 epub：本质是带目录结构的 zip，按阅读顺序提取内嵌图片，无损秒转
+        elif ext in ("epub", "pdf"):
+            # epub：带目录结构的 zip；pdf：扫描版漫画 —— 两者都走无损提取内嵌图
             meta = _parse_metadata(str(source))
             if not meta.get("title"):
                 meta["title"] = _guess_title_from_filename(source.name)
         else:
-            return {"success": False, "error": "只有 EPUB 和漫画压缩包（ZIP/CBZ）能转换为 CBZ"}
+            return {"success": False, "error": "只有 EPUB、PDF 和漫画包（ZIP/CBZ/CBR/CB7/CBC）能转换为 CBZ"}
 
         if use_original_name:
             new_name = source.stem
@@ -205,9 +298,21 @@ def convert_file(source_path: str, target_format: str, naming_rule: str = "{titl
         if output_path.exists() and not keep_source:
             output_path.unlink()
 
-        if is_comic:
+        if ext in ZIP_LIKE:
+            # zip / cbz：内容等价，直接复制改名（秒级、无损）
             shutil.copy2(str(source), str(output_path))
+        elif ext in ARCHIVE_LIKE:
+            # cbr / cb7 / cbc：unar 解压取图 → 重新打包成 zip
+            ok, err, pages = _extract_archive_to_cbz(source, output_path)
+            if not ok:
+                return {"success": False, "error": err}
+        elif ext == "pdf":
+            # 扫描版漫画 PDF：pdfimages 无损提取内嵌图（矢量 PDF 会被明确拒绝）
+            ok, err, pages = _extract_pdf_to_cbz(source, output_path)
+            if not ok:
+                return {"success": False, "error": err}
         else:
+            # epub：按 OPF spine 阅读顺序提取内嵌图片
             ok, err, pages = _extract_images_to_cbz(source, output_path)
             if not ok:
                 return {"success": False, "error": err}
@@ -234,13 +339,20 @@ def convert_file(source_path: str, target_format: str, naming_rule: str = "{titl
                 pass
         return {"success": True, "output_path": str(final_path), "metadata": meta}
     
-    # 漫画 ZIP → EPUB/PDF 等：Calibre 按后缀识别格式，zip 必须先复制成 .cbz 才会走漫画输入路径
+    # 漫画包 → EPUB/PDF 等：Calibre 按后缀认格式
+    # - zip：内容就是 cbz，复制成 .cbz 后缀即可（放 temp，源可能在只读目录）
+    # - cbr/cb7/cbc：Debian 版 Calibre 缺 unrardll 模块、读不了 RAR/7z，
+    #   所以先自己解压打包成 cbz，再交给它转换
     real_input = source
     cbz_tmp = None
-    if ext == "zip":
-        cbz_tmp = source.with_suffix(".cbz")
-        if not cbz_tmp.exists():
+    if ext in ("zip", "cbr", "cb7", "cbc"):
+        cbz_tmp = Path(TEMP_DIR) / f".{source.stem}.{os.getpid()}.__tmp__.cbz"
+        if ext == "zip":
             shutil.copy2(str(source), str(cbz_tmp))
+        else:
+            ok, err, pages = _extract_archive_to_cbz(source, cbz_tmp)
+            if not ok:
+                return {"success": False, "error": err}
         real_input = cbz_tmp
     
     # 提取元数据

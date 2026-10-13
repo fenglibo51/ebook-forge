@@ -1,8 +1,10 @@
 FROM python:3.12-slim
 
 # 安装 Calibre（锁定版本 8.5.0，转换结果稳定可复现）
+# unar：解压 RAR / 7z 漫画包（cbr / cb7 / cbc）用，一个工具覆盖多格式
 RUN apt-get update && apt-get install -y --no-install-recommends \
     calibre=8.5.0* \
+    unar \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Calibre 的 PDF 输出依赖 QtWebEngine，root 容器必须禁用沙箱

@@ -508,7 +508,7 @@ const ConvertPage = {
   getFormatIcon(ext) {
     const icons = {
       epub: "📖", mobi: "📱", azw3: "📱", pdf: "📕", txt: "📄", docx: "📝", fb2: "📘",
-      cbz: "🗂️", cbr: "🗂️", zip: "🗜️",
+      cbz: "🗂️", cbr: "🗂️", cb7: "🗂️", cbc: "🗂️", zip: "🗜️",
     };
     return icons[ext?.toLowerCase()] || "📄";
   },

@@ -5,7 +5,7 @@
 ## ✨ 功能
 
 - 📖 **格式转换** — EPUB、MOBI、AZW3、PDF、TXT、DOCX、FB2 互转
-- 🗜️ **漫画转换** — 漫画 EPUB → CBZ（无损秒转，按阅读顺序提取原图）；ZIP / CBZ → EPUB、PDF
+- 🗜️ **漫画转换** — 漫画 EPUB / PDF → CBZ（无损秒转，提取原图不重编码）；ZIP / CBZ / CBR / CB7 / CBC → CBZ、EPUB、PDF
 - ⬆️ **上传转换** — 上传文件 → 选格式 → 转换 → 下载
 - 🗂️ **书库管理** — 浏览服务器上的书库目录，勾选批量转换
 
@@ -24,15 +24,21 @@
 ## 🔄 支持的转换
 
 ```
-电子书互转    EPUB / MOBI / AZW3 / PDF / TXT / DOCX / FB2   ← 任意互转
-漫画压缩包    ZIP / CBZ  →  EPUB、PDF
-              ZIP        →  CBZ（规范化为漫画标准后缀）
-漫画 EPUB     EPUB       →  CBZ（无损提取，不重新编码）
+✨ 本项目的额外扩展
+   漫画 EPUB  →  CBZ        按 OPF 阅读顺序提取内嵌原图，无损，约 1-2 秒
+   漫画 PDF   →  CBZ        提取内嵌图片流，无损（仅扫描/图片版漫画；矢量 PDF 会明确拒绝）
+   漫画包     →  CBZ        ZIP / CBZ / CBR / CB7 / CBC 统一规范成标准 CBZ
+
+📚 基于 Calibre 引擎（ebook-convert）
+   漫画包     →  EPUB、PDF   ZIP / CBZ / CBR / CB7 / CBC
+   电子书互转                EPUB / MOBI / AZW3 / PDF / TXT / DOCX / FB2 任意互转
 ```
 
 > 💡 **漫画 EPUB → CBZ 是无损的**：epub 本质是「带目录结构的 zip」，
 > 程序按 OPF spine 的阅读顺序取出内嵌图片原样打包，一本 38 MB 的漫画集约 1-2 秒完成，画质 100% 保留。
 > 小说类 epub 通常只有封面图，会被识别为非漫画并提示改用 EPUB / TXT / MOBI 等格式。
+>
+> ⚠️ CBR / CB7 / CBC 依赖镜像内置的 `unar` 解压工具（本仓库 Dockerfile 已包含）。
 
 ## 🛠️ 技术栈
 
