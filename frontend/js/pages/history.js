@@ -78,6 +78,8 @@ const HistoryPage = {
       ).join("|");
       if (snapshot === this._lastSnapshot) return;
       this._lastSnapshot = snapshot;
+      // 仅在实际重绘时打点：F12 控制台若持续出现此日志，说明仍在重复重绘
+      console.log("[EbookForge] 转换记录表格重绘 @ " + new Date().toLocaleTimeString());
 
       if (data.tasks.length === 0) {
         tbody.innerHTML = '<tr><td colspan="5"><div class="loading">暂无转换记录</div></td></tr>';

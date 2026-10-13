@@ -55,9 +55,19 @@ app.include_router(settings.router)
 
 
 # 挂载前端静态文件
+class NoCacheStaticFiles(StaticFiles):
+    """静态资源不发强缓存头：改前端后用户刷新即可生效，无需 Ctrl+F5 强刷。
+    no-cache 仍保留 ETag/Last-Modified 条件请求（304 复用），只禁用强缓存。"""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
+
+
 frontend_dir = Path(__file__).parent.parent / "frontend"
 if frontend_dir.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
+    app.mount("/", NoCacheStaticFiles(directory=str(frontend_dir), html=True), name="frontend")
 else:
     @app.get("/")
     def root():
