@@ -4,6 +4,7 @@ import re
 import json
 import tempfile
 import shutil
+import zipfile
 from pathlib import Path
 from typing import Optional
 
@@ -67,6 +68,103 @@ def _apply_naming_rule(rule: str, title: str, author: str, ext: str, year: Optio
     return result
 
 
+IMG_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif")
+
+
+def _extract_images_to_cbz(epub_path: Path, out_cbz: Path) -> tuple:
+    """漫画 epub → CBZ：无损、秒级。
+
+    epub 本质是带目录结构的 zip。漫画 epub 里几乎全是图片，
+    按 OPF spine 的**阅读顺序**取出内嵌图片原样打包即可 ——
+    不经 Calibre、不转 PDF、不重编码，画质 100% 保留。
+
+    用 spine 而不是文件名排序的原因：漫画 epub 的封面文件名常常
+    是序号最大的那个（如 00193.jpeg），但它是第 1 页；按文件名排会把封面丢到最后。
+
+    返回 (成功: bool, 错误信息: str, 页数: int)
+    """
+    import posixpath
+    try:
+        with zipfile.ZipFile(str(epub_path)) as z:
+            names = set(z.namelist())
+
+            # 1) 从 META-INF/container.xml 定位 OPF
+            opf_path = None
+            if "META-INF/container.xml" in names:
+                c = z.read("META-INF/container.xml").decode("utf-8", "ignore")
+                m = re.search(r'full-path="([^"]+)"', c)
+                if m:
+                    opf_path = m.group(1)
+
+            ordered = []
+            if opf_path and opf_path in names:
+                base = posixpath.dirname(opf_path)
+                opf = z.read(opf_path).decode("utf-8", "ignore")
+
+                # manifest: id -> href
+                manifest = {}
+                for tag in re.findall(r"<item\b[^>]*/?>", opf):
+                    idm = re.search(r'id="([^"]+)"', tag)
+                    hm = re.search(r'href="([^"]+)"', tag)
+                    if idm and hm:
+                        manifest[idm.group(1)] = hm.group(1)
+
+                # 按 spine 顺序遍历
+                spine = re.findall(r'<itemref[^>]*idref="([^"]+)"', opf)
+                for sid in spine:
+                    href = manifest.get(sid)
+                    if not href:
+                        continue
+                    full = posixpath.normpath(posixpath.join(base, href) if base else href)
+                    if full not in names:
+                        continue
+                    e = posixpath.splitext(full)[1].lower()
+                    if e in IMG_EXTS:
+                        if full not in ordered:
+                            ordered.append(full)
+                    elif e in (".html", ".xhtml", ".htm"):
+                        html = z.read(full).decode("utf-8", "ignore")
+                        srcs = (re.findall(r'<img[^>]*\bsrc="([^"]+)"', html)
+                                + re.findall(r'<image[^>]*\bxlink:href="([^"]+)"', html)
+                                + re.findall(r'<image[^>]*\bhref="([^"]+)"', html))
+                        sub = posixpath.dirname(full)
+                        for s in srcs:
+                            p = posixpath.normpath(posixpath.join(sub, s) if sub else s)
+                            if p in names and p not in ordered:
+                                ordered.append(p)
+
+            # 2) 兜底：OPF 解析不出来就按文件名排序
+            if not ordered:
+                ordered = sorted(n for n in names
+                                 if posixpath.splitext(n)[1].lower() in IMG_EXTS)
+
+            if not ordered:
+                return False, "这本 epub 里没有图片，无法转换为 CBZ", 0
+
+            # 防呆：图片太少或占体积比例过低 → 不是漫画
+            # （小说类 epub 通常只有 1 张封面图，直接提取会产出只有一页的垃圾 cbz）
+            total_size = sum(i.file_size for i in z.infolist())
+            img_size = sum(z.getinfo(n).file_size for n in ordered)
+            ratio = (img_size / total_size) if total_size else 0
+            if len(ordered) < 5 or ratio < 0.3:
+                return False, (f"这本 epub 不像漫画（图片 {len(ordered)} 张、约占体积 {ratio:.0%}），"
+                               f"没有可提取的漫画内容。小说类书籍请转 EPUB / TXT / MOBI 等格式"), 0
+
+            # 3) 原样打包：JPEG 本身已压缩，用 STORED 不再二次压缩（最快）；
+            #    PNG 用 DEFLATED 收一下空间。重命名成 00001.jpg 保证阅读顺序。
+            with zipfile.ZipFile(str(out_cbz), "w") as zout:
+                for i, n in enumerate(ordered, 1):
+                    e = posixpath.splitext(n)[1].lower()
+                    comp = zipfile.ZIP_DEFLATED if e == ".png" else zipfile.ZIP_STORED
+                    zout.writestr(f"{i:05d}{e}", z.read(n), compress_type=comp)
+
+            return True, "", len(ordered)
+    except zipfile.BadZipFile:
+        return False, "epub 文件损坏（不是有效的 zip 结构）", 0
+    except Exception as e:
+        return False, f"提取图片失败: {e}", 0
+
+
 def convert_file(source_path: str, target_format: str, naming_rule: str = "{title}.{author}.{ext}", keep_source: bool = False, use_original_name: bool = False, target_dir: str = "temp") -> dict:
     """
     转换单个电子书文件
@@ -84,21 +182,35 @@ def convert_file(source_path: str, target_format: str, naming_rule: str = "{titl
     
     is_comic = ext in ("zip", "cbz")
     
-    # 漫画 → CBZ：Calibre 不支持输出 CBZ（No plugin to handle output format: cbz），直接复制改名
+    # → CBZ
     if target_format == "cbz":
-        if not is_comic:
-            return {"success": False, "error": "只有漫画压缩包（ZIP/CBZ）能转换为 CBZ"}
-        meta = {"title": _guess_title_from_filename(source.name), "author": None, "year": None}
+        if is_comic:
+            # 漫画压缩包（zip/cbz）：内容等价，直接复制改名
+            meta = {"title": _guess_title_from_filename(source.name), "author": None, "year": None}
+        elif ext == "epub":
+            # 漫画 epub：本质是带目录结构的 zip，按阅读顺序提取内嵌图片，无损秒转
+            meta = _parse_metadata(str(source))
+            if not meta.get("title"):
+                meta["title"] = _guess_title_from_filename(source.name)
+        else:
+            return {"success": False, "error": "只有 EPUB 和漫画压缩包（ZIP/CBZ）能转换为 CBZ"}
+
         if use_original_name:
             new_name = source.stem
             new_name = re.sub(r'_\d{14}$', '', new_name)
             new_name = re.sub(r'_\d{8}$', '', new_name)
         else:
-            new_name = _apply_naming_rule(naming_rule, meta["title"], "", "", None)
+            new_name = _apply_naming_rule(naming_rule, meta["title"], meta.get("author", ""), "", meta.get("year"))
         output_path = source.parent / f"{new_name}.cbz"
         if output_path.exists() and not keep_source:
             output_path.unlink()
-        shutil.copy2(str(source), str(output_path))
+
+        if is_comic:
+            shutil.copy2(str(source), str(output_path))
+        else:
+            ok, err, pages = _extract_images_to_cbz(source, output_path)
+            if not ok:
+                return {"success": False, "error": err}
         final_path = output_path
         if target_dir != "temp" and output_path.exists():
             book_dest = Path(BOOK_PATH) / target_dir.lstrip("/") / output_path.name

@@ -19,8 +19,9 @@ SUPPORTED_FORMATS = {
 }
 
 # Calibre can convert FROM -> TO
+# 注意：cbz 作为目标只对 epub（漫画 epub）和 zip/cbz（漫画压缩包）开放 —— 小说类格式不涉及 CBZ
 CONVERT_MATRIX = {
-    "epub": ["mobi", "azw3", "pdf", "txt", "docx", "fb2"],
+    "epub": ["mobi", "azw3", "pdf", "txt", "docx", "fb2", "cbz"],
     "mobi": ["epub", "azw3", "pdf", "txt", "docx", "fb2"],
     "azw3": ["epub", "mobi", "pdf", "txt", "docx", "fb2"],
     "pdf":  ["epub", "mobi", "azw3", "txt", "docx", "fb2"],
