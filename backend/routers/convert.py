@@ -13,7 +13,7 @@ from typing import Optional
 from ..models.schemas import ConvertRequest, BatchConvertRequest, ConvertTask
 from ..services.converter import convert_file, get_supported_targets, check_calibre_available
 from ..services.file_manager import scan_file
-from ..config import SUPPORTED_FORMATS, BOOK_PATH, HISTORY_DB, TEMP_DIR, DEFAULT_CBZ_DPI
+from ..config import SUPPORTED_FORMATS, BOOK_PATH, HISTORY_DB, TEMP_DIR
 
 router = APIRouter(prefix="/api/convert", tags=["convert"])
 
@@ -105,8 +105,6 @@ def start_convert(req: ConvertRequest):
             keep_source=req.keep_source,
             use_original_name=req.use_original_name,
             target_dir=req.target_dir,
-            dpi=req.dpi or DEFAULT_CBZ_DPI,
-            img_format=req.img_format or "jpeg",
         )
         with _lock:
             if task_id in _tasks:
@@ -178,8 +176,6 @@ def batch_convert(req: BatchConvertRequest):
                     keep_source=actual_req.keep_source,
                     use_original_name=actual_req.use_original_name,
                     target_dir=actual_req.target_dir,
-                    dpi=actual_req.dpi or DEFAULT_CBZ_DPI,
-                    img_format=actual_req.img_format or "jpeg",
                 )
                 with _lock:
                     if tid in _tasks:

@@ -20,18 +20,15 @@ SUPPORTED_FORMATS = {
 
 # Calibre can convert FROM -> TO
 CONVERT_MATRIX = {
-    "epub": ["mobi", "azw3", "pdf", "txt", "docx", "fb2", "cbz"],
-    "mobi": ["epub", "azw3", "pdf", "txt", "docx", "fb2", "cbz"],
-    "azw3": ["epub", "mobi", "pdf", "txt", "docx", "fb2", "cbz"],
-    "pdf":  ["epub", "mobi", "azw3", "txt", "docx", "fb2", "cbz"],
-    "txt":  ["epub", "mobi", "azw3", "pdf", "docx", "fb2", "cbz"],
-    "docx": ["epub", "mobi", "azw3", "pdf", "txt", "fb2", "cbz"],
-    "fb2":  ["epub", "mobi", "azw3", "pdf", "txt", "docx", "cbz"],
+    "epub": ["mobi", "azw3", "pdf", "txt", "docx", "fb2"],
+    "mobi": ["epub", "azw3", "pdf", "txt", "docx", "fb2"],
+    "azw3": ["epub", "mobi", "pdf", "txt", "docx", "fb2"],
+    "pdf":  ["epub", "mobi", "azw3", "txt", "docx", "fb2"],
+    "txt":  ["epub", "mobi", "azw3", "pdf", "docx", "fb2"],
+    "docx": ["epub", "mobi", "azw3", "pdf", "txt", "fb2"],
+    "fb2":  ["epub", "mobi", "azw3", "pdf", "txt", "docx"],
     "zip":  ["epub", "pdf", "cbz"],
     "cbz":  ["epub", "pdf"],
 }
-
-# 电子书 → CBZ 光栅化默认 DPI（可被请求参数覆盖）
-DEFAULT_CBZ_DPI = 150
 
 DEFAULT_NAMING_RULE = "{title}.{author}.{ext}"

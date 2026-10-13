@@ -10,10 +10,6 @@ class ConvertRequest(BaseModel):
     keep_source: bool = False
     use_original_name: bool = False
     target_dir: Optional[str] = "temp"
-    # 仅「电子书 → CBZ」光栅化时生效，单位 DPI；不传则用后端默认值
-    dpi: Optional[int] = None
-    # 仅「电子书 → CBZ」生效：jpeg（默认，照片/漫画体积小）或 png（无损，文字/线条图体积小）
-    img_format: Optional[str] = None
 
 
 class BatchConvertRequest(BaseModel):
