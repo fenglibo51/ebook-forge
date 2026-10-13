@@ -1,11 +1,11 @@
 # 📚 EbookForge
 
-> 电子书格式互转 Web 工具 — 基于 Calibre `ebook-convert` 引擎，常见电子书格式互转，漫画压缩包也能处理。
+> 电子书格式互转 Web 工具 — 基于 Calibre `ebook-convert` 引擎，常见电子书格式互转，漫画也能处理。
 
 ## ✨ 功能
 
 - 📖 **格式转换** — EPUB、MOBI、AZW3、PDF、TXT、DOCX、FB2 互转
-- 🗜️ **漫画压缩包** — ZIP / CBZ 作为输入，可转 EPUB、PDF；也能把 ZIP 规范化为 CBZ
+- 🗜️ **漫画转换** — 漫画 EPUB → CBZ（无损秒转，按阅读顺序提取原图）；ZIP / CBZ → EPUB、PDF
 - ⬆️ **上传转换** — 上传文件 → 选格式 → 转换 → 下载
 - 🗂️ **书库管理** — 浏览服务器上的书库目录，勾选批量转换
 
@@ -20,6 +20,19 @@
 ![转换记录页](assets/screenshots/history-page.png)
 
 ![设置页](assets/screenshots/settings-page.png)
+
+## 🔄 支持的转换
+
+```
+电子书互转    EPUB / MOBI / AZW3 / PDF / TXT / DOCX / FB2   ← 任意互转
+漫画压缩包    ZIP / CBZ  →  EPUB、PDF
+              ZIP        →  CBZ（规范化为漫画标准后缀）
+漫画 EPUB     EPUB       →  CBZ（无损提取，不重新编码）
+```
+
+> 💡 **漫画 EPUB → CBZ 是无损的**：epub 本质是「带目录结构的 zip」，
+> 程序按 OPF spine 的阅读顺序取出内嵌图片原样打包，一本 38 MB 的漫画集约 1-2 秒完成，画质 100% 保留。
+> 小说类 epub 通常只有封面图，会被识别为非漫画并提示改用 EPUB / TXT / MOBI 等格式。
 
 ## 🛠️ 技术栈
 
@@ -89,6 +102,8 @@ docker compose up -d --build
 - 💾 `./data` — 持久化目录，映射到容器 `/data`（转换历史 `convert_history.json`、设置 `settings.json`）
 
 转换历史最多保留 500 条，超出后自动裁掉最旧的；临时文件默认保留 24 小时，可在设置页或通过 `CLEANUP_HOURS` 调整。
+
+> 💡 书库批量转换时可取消勾选「保留原文件」，转换成功后自动删除源文件（删除不可逆，操作前会二次确认）。
 
 ## 💻 本地开发
 

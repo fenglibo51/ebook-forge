@@ -188,10 +188,17 @@ const LibraryPage = {
     if (!format) { Toast.error("请选择目标格式"); return; }
     if (this.selected.size === 0) { Toast.error("未选择文件"); return; }
 
+    // 不保留原文件是不可逆操作，转换前必须确认
+    const keepSrc = document.getElementById("batch-keep-source")?.checked ?? true;
+    if (!keepSrc) {
+      const n = this.selected.size;
+      if (!confirm(`已取消「保留原文件」：转换成功后将删除这 ${n} 个原文件（不可恢复）。\n\n确定继续？`)) return;
+    }
+
     const files = Array.from(this.selected).map(p => ({
       source_path: p,
       target_format: format,
-      keep_source: document.getElementById("batch-keep-source")?.checked ?? true,
+      keep_source: keepSrc,
       use_original_name: true,
     }));
 

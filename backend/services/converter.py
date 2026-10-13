@@ -222,9 +222,16 @@ def convert_file(source_path: str, target_format: str, naming_rule: str = "{titl
                 except: pass
             try: output_path.unlink()
             except: pass
-        elif not keep_source and str(source).startswith(TEMP_DIR):
-            try: source.unlink()
-            except: pass
+        # 源文件清理：keep_source=False 且输出确实生成成功 → 删源
+        # （书库源同样适用；输出不存在/为空时绝不删，避免转换失败还丢原文件）
+        if not keep_source:
+            try:
+                if (source.exists() and Path(final_path).exists()
+                        and Path(final_path).stat().st_size > 0
+                        and str(source) != str(final_path)):
+                    source.unlink()
+            except Exception:
+                pass
         return {"success": True, "output_path": str(final_path), "metadata": meta}
     
     # 漫画 ZIP → EPUB/PDF 等：Calibre 按后缀识别格式，zip 必须先复制成 .cbz 才会走漫画输入路径
@@ -281,9 +288,18 @@ def convert_file(source_path: str, target_format: str, naming_rule: str = "{titl
             try: output_path.unlink()
             except: pass
         
-        # 上传的文件在 temp 里，永远不删原始书库文件
-        if not keep_source and output_path.exists() and str(source).startswith(TEMP_DIR):
-            source.unlink()
+        # 源文件清理：
+        # - 源在 temp（上传中转）：上面的分支已处理
+        # - 源在书库：仅当用户明确勾选「不保留原文件」(keep_source=False)
+        #   且输出确实生成成功（存在且非空）时才删除，避免转换失败还丢原文件
+        if not keep_source:
+            try:
+                if (source.exists() and Path(final_path).exists()
+                        and Path(final_path).stat().st_size > 0
+                        and str(source) != str(final_path)):
+                    source.unlink()
+            except Exception:
+                pass
         
         # 清理 zip 转换产生的临时 cbz 副本
         if cbz_tmp and cbz_tmp.exists() and str(cbz_tmp).startswith(TEMP_DIR):
