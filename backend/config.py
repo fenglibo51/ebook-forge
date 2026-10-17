@@ -25,8 +25,8 @@ SUPPORTED_FORMATS = {
 # 注意：cbz 作为目标对 epub 和各类漫画包（ZIP/CBZ/CBR/CB7/CBC）开放 —— 小说类格式不涉及 CBZ
 CONVERT_MATRIX = {
     "epub": ["mobi", "azw3", "pdf", "txt", "docx", "fb2", "cbz"],
-    "mobi": ["epub", "azw3", "pdf", "txt", "docx", "fb2"],
-    "azw3": ["epub", "mobi", "pdf", "txt", "docx", "fb2"],
+    "mobi": ["epub", "azw3", "pdf", "txt", "docx", "fb2", "cbz"],
+    "azw3": ["epub", "mobi", "pdf", "txt", "docx", "fb2", "cbz"],
     "pdf":  ["epub", "mobi", "azw3", "txt", "docx", "fb2", "cbz"],
     "txt":  ["epub", "mobi", "azw3", "pdf", "docx", "fb2"],
     "docx": ["epub", "mobi", "azw3", "pdf", "txt", "fb2"],

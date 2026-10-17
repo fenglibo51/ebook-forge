@@ -257,6 +257,37 @@ def _extract_pdf_to_cbz(pdf_path: Path, out_cbz: Path) -> tuple:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def _kindle_to_cbz(source: Path, out_cbz: Path) -> tuple:
+    """Kindle 漫画（mobi / azw3）→ CBZ：先转成临时 epub，再按 epub 提取原始图片。
+
+    mobi/azw3 是二进制容器，没有现成的图片提取路径；Calibre 转 epub 时会把内嵌
+    图片原样导出，所以走「mobi → epub → 提取图片」这条链，最终仍然无损
+    （ChainLP 之类工具做的漫画 mobi 里就是逐页 JPEG）。
+
+    返回 (成功: bool, 错误信息: str, 页数: int)
+    """
+    tmp_epub = Path(TEMP_DIR) / f".{source.stem}.{os.getpid()}.__tmp__.epub"
+    try:
+        env = {**os.environ, "QTWEBENGINE_DISABLE_SANDBOX": "1"}
+        r = subprocess.run(
+            ["ebook-convert", str(source), str(tmp_epub)],
+            capture_output=True, text=True, timeout=900, env=env,
+        )
+        if r.returncode != 0 or not tmp_epub.exists():
+            err = (r.stderr.strip() or r.stdout.strip() or "转 epub 失败")
+            return False, f"Kindle 格式转 epub 失败：{err[-500:]}", 0
+        return _extract_images_to_cbz(tmp_epub, out_cbz)
+    except subprocess.TimeoutExpired:
+        return False, "Kindle 格式转换超时（15 分钟）", 0
+    except Exception as e:
+        return False, f"Kindle 转 CBZ 失败: {e}", 0
+    finally:
+        try:
+            tmp_epub.unlink()
+        except Exception:
+            pass
+
+
 def convert_file(source_path: str, target_format: str, naming_rule: str = "{title}.{author}.{ext}", keep_source: bool = False, use_original_name: bool = False, target_dir: str = "temp") -> dict:
     """
     转换单个电子书文件
@@ -280,13 +311,13 @@ def convert_file(source_path: str, target_format: str, naming_rule: str = "{titl
     if target_format == "cbz":
         if is_comic:
             meta = {"title": _guess_title_from_filename(source.name), "author": None, "year": None}
-        elif ext in ("epub", "pdf"):
-            # epub：带目录结构的 zip；pdf：扫描版漫画 —— 两者都走无损提取内嵌图
+        elif ext in ("epub", "pdf", "mobi", "azw3"):
+            # epub/pdf：直接无损提取内嵌图；mobi/azw3：先转 epub 再提取
             meta = _parse_metadata(str(source))
             if not meta.get("title"):
                 meta["title"] = _guess_title_from_filename(source.name)
         else:
-            return {"success": False, "error": "只有 EPUB、PDF 和漫画包（ZIP/CBZ/CBR/CB7/CBC）能转换为 CBZ"}
+            return {"success": False, "error": "只有 EPUB、PDF、MOBI、AZW3 和漫画包（ZIP/CBZ/CBR/CB7/CBC）能转换为 CBZ"}
 
         if use_original_name:
             new_name = source.stem
@@ -309,6 +340,11 @@ def convert_file(source_path: str, target_format: str, naming_rule: str = "{titl
         elif ext == "pdf":
             # 扫描版漫画 PDF：pdfimages 无损提取内嵌图（矢量 PDF 会被明确拒绝）
             ok, err, pages = _extract_pdf_to_cbz(source, output_path)
+            if not ok:
+                return {"success": False, "error": err}
+        elif ext in ("mobi", "azw3"):
+            # Kindle 漫画：先转 epub，再按 epub 无损提取图片
+            ok, err, pages = _kindle_to_cbz(source, output_path)
             if not ok:
                 return {"success": False, "error": err}
         else:

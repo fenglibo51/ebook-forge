@@ -27,6 +27,7 @@
 ✨ 本项目的额外扩展
    漫画 EPUB  →  CBZ        按 OPF 阅读顺序提取内嵌原图，无损，约 1-2 秒
    漫画 PDF   →  CBZ        提取内嵌图片流，无损（仅扫描/图片版漫画；矢量 PDF 会明确拒绝）
+   漫画 MOBI / AZW3 → CBZ   先转成 EPUB 再提取原图，仍无损（Kindle 漫画常见格式）
    漫画包     →  CBZ        ZIP / CBZ / CBR / CB7 / CBC 统一规范成标准 CBZ
 
 📚 基于 Calibre 引擎（ebook-convert）
