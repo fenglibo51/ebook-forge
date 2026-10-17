@@ -39,7 +39,7 @@ const LibraryPage = {
         btn.disabled = true;
         btn.textContent = "⏳ 扫描中...";
         try {
-          const data = await API.listFiles(this.currentPath || "", this.filterExt || null);
+          const data = await API.listFiles(this.currentPath || "", this.filterExt || null, true);
           data.files.forEach(f => this.selected.add(f.path));
           Toast.success(`已选中 ${this.selected.size} 个文件`);
         } catch (e) {

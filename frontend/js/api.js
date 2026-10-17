@@ -57,10 +57,12 @@ const API = {
   },
 
   // 递归列出目录下所有文件（书库「全选」用）
-  listFiles(subdir, filterExt) {
+  // onlySupported=true 时只返回支持转换的格式（跳过封面图、音频等）
+  listFiles(subdir, filterExt, onlySupported = false) {
     const params = new URLSearchParams();
     if (subdir) params.set("subdir", subdir);
     if (filterExt) params.set("filter_ext", filterExt);
+    if (onlySupported) params.set("only_supported", "true");
     return this.get(`/library/files?${params}`);
   },
 

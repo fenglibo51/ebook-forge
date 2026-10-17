@@ -31,11 +31,13 @@ def browse(subdir: str = "", filter_ext: Optional[str] = None):
 
 
 @router.get("/files")
-def list_files_recursive(subdir: str = "", filter_ext: Optional[str] = None):
+def list_files_recursive(subdir: str = "", filter_ext: Optional[str] = None, only_supported: bool = False):
     """递归列出目录下所有文件（书库「全选」跨子目录批量转换用）
 
     漫画书库通常是 /book/comics/<系列>/<卷>.pdf 这种结构，
     在 comics 这一层点「全选」看到的全是目录，必须递归到文件才有意义。
+
+    only_supported=True：只返回支持转换的格式（跳过封面图 jpg、音频 mp3 等无关文件）
     """
     base = Path(BOOK_PATH) / subdir.strip("/") if subdir.strip("/") else Path(BOOK_PATH)
     if not base.exists() or not base.is_dir():
@@ -54,6 +56,8 @@ def list_files_recursive(subdir: str = "", filter_ext: Optional[str] = None):
                 else:
                     ext = entry.suffix.lower().lstrip(".")
                     if filter_ext and ext != filter_ext.lower():
+                        continue
+                    if only_supported and ext not in SUPPORTED_FORMATS:
                         continue
                     try:
                         size = entry.stat().st_size
