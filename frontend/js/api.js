@@ -105,6 +105,11 @@ const API = {
     return this.get(`/convert/supported-targets/${ext}`);
   },
 
+  // 完整转换矩阵（源格式 → 可用目标格式），批量转换前做兼容性校验
+  getMatrix() {
+    return this.get("/convert/matrix");
+  },
+
   // 历史
   getHistory(status, limit = 50) {
     const params = new URLSearchParams();

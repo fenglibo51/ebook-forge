@@ -335,3 +335,14 @@ def temp_clear():
 def get_targets(ext: str):
     """查询某格式支持转换的目标格式"""
     return {"targets": get_supported_targets(ext)}
+
+
+@router.get("/matrix")
+def get_matrix():
+    """返回完整的「源格式 → 可用目标格式」矩阵
+
+    前端批量转换前用它做兼容性校验：提前告诉用户哪些选中文件转不了目标格式，
+    避免转完才发现一堆失败。
+    """
+    from ..config import CONVERT_MATRIX
+    return {"matrix": CONVERT_MATRIX}

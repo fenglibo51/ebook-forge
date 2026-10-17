@@ -238,39 +238,78 @@ const LibraryPage = {
     const keepSrc = document.getElementById("batch-keep-source")?.checked ?? true;
     const n = this.selected.size;
 
-    // 按格式统计选中文件，让确认框能一眼看清"这一批都是什么"
+    // 取格式支持矩阵：提前判断哪些选中文件转不了目标格式（否则要等转完才看到一堆失败）
+    let matrix = {};
+    try {
+      const m = await API.getMatrix();
+      matrix = m.matrix || {};
+    } catch (e) {
+      console.warn("获取格式矩阵失败，跳过兼容性校验", e);
+    }
+    const hasMatrix = Object.keys(matrix).length > 0;
+
+    // 按格式统计选中文件
     const extCount = {};
     this.selected.forEach(p => {
-      const m = p.match(/\.([^./\\]+)$/);
-      const ext = m ? m[1].toLowerCase() : "未知";
+      const mm = p.match(/\.([^./\\]+)$/);
+      const ext = mm ? mm[1].toLowerCase() : "未知";
       extCount[ext] = (extCount[ext] || 0) + 1;
     });
-    const extLines = Object.entries(extCount)
-      .sort((a, b) => b[1] - a[1])
-      .map(([ext, cnt]) => `  · ${ext.toUpperCase()}：${cnt} 个`)
+
+    const rows = Object.entries(extCount)
+      .map(([ext, cnt]) => ({
+        ext, cnt,
+        ok: !hasMatrix || (matrix[ext] || []).includes(format),
+      }))
+      .sort((a, b) => b.cnt - a.cnt);
+
+    const unsupportedRows = rows.filter(r => !r.ok);
+    const unsupportedCount = unsupportedRows.reduce((s, r) => s + r.cnt, 0);
+    const convertibleCount = n - unsupportedCount;
+
+    const fmtLines = rows
+      .map(r => `  · ${r.ext.toUpperCase()}：${r.cnt} 个${r.ok ? "" : "   ⚠️ 不支持"}`)
       .join("\n");
 
-    // 转换前统一确认：数量 + 格式构成 + 目标格式 + 是否保留原文件，
-    // 防止误点全选后手滑，一次转掉一大批文件
+    // 转换前统一确认：数量 + 格式构成 + 目标格式 + 是否保留原文件
     let msg = "确认执行批量转换？\n\n";
     msg += `文件数量：${n} 个\n`;
-    msg += extLines + "\n\n";
+    msg += fmtLines + "\n\n";
     msg += `目标格式：${format.toUpperCase()}\n`;
     msg += keepSrc
       ? "保留原文件：是\n"
       : "保留原文件：否（转换成功后将删除源文件，不可恢复）\n";
-    if (n > 20) {
+
+    if (unsupportedCount > 0) {
+      msg += `\n⚠️ 其中 ${unsupportedCount} 个文件不支持转为 ${format.toUpperCase()}：\n`;
+      msg += unsupportedRows.map(r => `     ${r.ext.toUpperCase()}（${r.cnt} 个）`).join("\n") + "\n";
+      msg += `   这些会被自动跳过，实际只转换 ${convertibleCount} 个。\n`;
+    }
+    if (n > 20 && convertibleCount > 0) {
       msg += "\n⚠️ 数量较多，转换会持续较长时间，期间机器负载会升高。";
     }
     msg += "\n\n确定继续吗？";
     if (!confirm(msg)) return;
 
-    const files = Array.from(this.selected).map(p => ({
-      source_path: p,
-      target_format: format,
-      keep_source: keepSrc,
-      use_original_name: true,
-    }));
+    if (convertibleCount === 0) {
+      Toast.error(`选中的文件都不支持转为 ${format.toUpperCase()}`);
+      return;
+    }
+
+    // 只提交支持该目标格式的文件
+    const files = [];
+    this.selected.forEach(p => {
+      const mm = p.match(/\.([^./\\]+)$/);
+      const ext = mm ? mm[1].toLowerCase() : "";
+      if (!hasMatrix || (matrix[ext] || []).includes(format)) {
+        files.push({
+          source_path: p,
+          target_format: format,
+          keep_source: keepSrc,
+          use_original_name: true,
+        });
+      }
+    });
 
     // 显示进度区域
     const area = document.getElementById("library-progress");
