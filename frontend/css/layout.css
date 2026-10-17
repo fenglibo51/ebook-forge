@@ -31,11 +31,79 @@ html, body {
   flex-direction: column;
   padding: 0;
   z-index: 10;
+  transition: width 0.22s ease, min-width 0.22s ease;
+}
+
+/* ===== 侧边栏收起状态：只留图标 ===== */
+#sidebar.collapsed {
+  width: 64px;
+  min-width: 64px;
+}
+
+#sidebar.collapsed .sidebar-brand,
+#sidebar.collapsed .nav-label,
+#sidebar.collapsed .status-text,
+#sidebar.collapsed #theme-label {
+  display: none;
+}
+
+#sidebar.collapsed .sidebar-header {
+  padding: 20px 8px 12px;
+  justify-content: center;
+}
+
+#sidebar.collapsed .nav-item {
+  justify-content: center;
+  padding: 10px 0;
+}
+
+#sidebar.collapsed .sidebar-footer {
+  padding: 12px 8px;
+}
+
+#sidebar.collapsed .theme-btn,
+#sidebar.collapsed .status-dot {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+#sidebar.collapsed .sidebar-toggle {
+  transform: rotate(180deg);
 }
 
 .sidebar-header {
   padding: 20px 16px 12px;
   border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sidebar-brand {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.sidebar-toggle {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  border-radius: 6px;
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+  transition: all var(--transition);
+}
+
+.sidebar-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .logo {

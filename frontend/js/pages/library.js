@@ -16,9 +16,42 @@ const LibraryPage = {
     document.getElementById("btn-refresh").addEventListener("click", () => this.load(this.currentPath));
 
     // 全选
-    document.getElementById("btn-select-all").addEventListener("click", () => {
-      const files = this.allItems.filter(it => !it.is_dir);
-      files.forEach(f => this.selected.add(f.path));
+    document.getElementById("btn-select-all").addEventListener("click", async () => {
+      const btn = document.getElementById("btn-select-all");
+
+      // 已经全选过 → 再点一次就是「取消全选」
+      if (btn.dataset.allSelected === "1") {
+        this.selected.clear();
+        btn.dataset.allSelected = "0";
+        btn.textContent = "☑️ 全选";
+        this.renderItems();
+        this.updateBatchBar();
+        return;
+      }
+
+      // 当前目录下的文件直接选中
+      this.allItems.filter(it => !it.is_dir).forEach(f => this.selected.add(f.path));
+
+      // 若当前目录还有子目录（漫画书库常见：comics/<系列>/<卷>.pdf），
+      // 递归收集子目录里的文件 —— 否则在这一层点「全选」永远是空的
+      if (this.allItems.some(it => it.is_dir)) {
+        const oldText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "⏳ 扫描中...";
+        try {
+          const data = await API.listFiles(this.currentPath || "", this.filterExt || null);
+          data.files.forEach(f => this.selected.add(f.path));
+          Toast.success(`已选中 ${this.selected.size} 个文件`);
+        } catch (e) {
+          Toast.error(`扫描失败: ${e.message}`);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = oldText;
+        }
+      }
+
+      btn.dataset.allSelected = "1";
+      btn.textContent = "☐ 取消全选";
       this.renderItems();
       this.updateBatchBar();
     });
@@ -169,6 +202,15 @@ const LibraryPage = {
   updateBatchBar() {
     const bar = document.getElementById("batch-bar");
     const count = this.selected.size;
+
+    // 选中被清空时（点取消选择、切换目录），全选按钮恢复初始文案
+    if (count === 0) {
+      const allBtn = document.getElementById("btn-select-all");
+      if (allBtn && allBtn.dataset.allSelected === "1") {
+        allBtn.dataset.allSelected = "0";
+        allBtn.textContent = "☑️ 全选";
+      }
+    }
     if (count > 0) {
       bar.style.display = "flex";
       document.getElementById("batch-count").textContent = count;
@@ -184,16 +226,31 @@ const LibraryPage = {
   },
 
   async batchConvert() {
-    const format = document.getElementById("batch-format").value;
-    if (!format) { Toast.error("请选择目标格式"); return; }
+    const formatEl = document.getElementById("batch-format");
+    const format = formatEl.value;
+    if (!format) {
+      Toast.error("请先选择目标格式（下拉框现在还是「转换格式...」占位提示）");
+      formatEl.focus();
+      return;
+    }
     if (this.selected.size === 0) { Toast.error("未选择文件"); return; }
 
-    // 不保留原文件是不可逆操作，转换前必须确认
     const keepSrc = document.getElementById("batch-keep-source")?.checked ?? true;
-    if (!keepSrc) {
-      const n = this.selected.size;
-      if (!confirm(`已取消「保留原文件」：转换成功后将删除这 ${n} 个原文件（不可恢复）。\n\n确定继续？`)) return;
+    const n = this.selected.size;
+
+    // 转换前统一确认：把「数量 + 目标格式 + 是否保留原文件」都摆出来，
+    // 防止误点全选后手滑，一次转掉一大批文件
+    let msg = "确认执行批量转换？\n\n";
+    msg += `文件数量：${n} 个\n`;
+    msg += `目标格式：${format.toUpperCase()}\n`;
+    msg += keepSrc
+      ? "保留原文件：是\n"
+      : "保留原文件：否（转换成功后将删除源文件，不可恢复）\n";
+    if (n > 20) {
+      msg += "\n⚠️ 数量较多，转换会持续较长时间，期间机器负载会升高。";
     }
+    msg += "\n\n确定继续吗？";
+    if (!confirm(msg)) return;
 
     const files = Array.from(this.selected).map(p => ({
       source_path: p,

@@ -56,6 +56,14 @@ const API = {
     return this.get(`/library/browse?${params}`);
   },
 
+  // 递归列出目录下所有文件（书库「全选」用）
+  listFiles(subdir, filterExt) {
+    const params = new URLSearchParams();
+    if (subdir) params.set("subdir", subdir);
+    if (filterExt) params.set("filter_ext", filterExt);
+    return this.get(`/library/files?${params}`);
+  },
+
   fileInfo(path) {
     return this.get(`/library/info?path=${encodeURIComponent(path)}`);
   },

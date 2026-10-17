@@ -35,6 +35,27 @@
     const hash = window.location.hash.replace("#", "") || "convert";
     navigate(hash);
 
+    // ===== 侧边栏收放 =====
+    const sidebar = document.getElementById("sidebar");
+    const toggleBtn = document.getElementById("btn-toggle-sidebar");
+    const STORAGE_KEY = "ebookforge:sidebar-collapsed";
+
+    function applyCollapsed(collapsed) {
+      sidebar.classList.toggle("collapsed", collapsed);
+      toggleBtn.textContent = collapsed ? "»" : "«";
+      toggleBtn.title = collapsed ? "展开侧边栏" : "收起侧边栏";
+    }
+
+    if (sidebar && toggleBtn) {
+      // 恢复上次状态（刷新后保持）
+      applyCollapsed(localStorage.getItem(STORAGE_KEY) === "1");
+      toggleBtn.addEventListener("click", () => {
+        const next = !sidebar.classList.contains("collapsed");
+        applyCollapsed(next);
+        localStorage.setItem(STORAGE_KEY, next ? "1" : "0");
+      });
+    }
+
     // 暴露导航函数供全局使用
     window.navigateTo = navigate;
   });

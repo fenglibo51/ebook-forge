@@ -30,6 +30,49 @@ def browse(subdir: str = "", filter_ext: Optional[str] = None):
     }
 
 
+@router.get("/files")
+def list_files_recursive(subdir: str = "", filter_ext: Optional[str] = None):
+    """递归列出目录下所有文件（书库「全选」跨子目录批量转换用）
+
+    漫画书库通常是 /book/comics/<系列>/<卷>.pdf 这种结构，
+    在 comics 这一层点「全选」看到的全是目录，必须递归到文件才有意义。
+    """
+    base = Path(BOOK_PATH) / subdir.strip("/") if subdir.strip("/") else Path(BOOK_PATH)
+    if not base.exists() or not base.is_dir():
+        raise HTTPException(404, "目录不存在")
+
+    files = []
+
+    def walk(d: Path, rel: str):
+        try:
+            for entry in sorted(d.iterdir()):
+                if entry.name.startswith("."):
+                    continue
+                rel_path = f"{rel}/{entry.name}" if rel else entry.name
+                if entry.is_dir():
+                    walk(entry, rel_path)
+                else:
+                    ext = entry.suffix.lower().lstrip(".")
+                    if filter_ext and ext != filter_ext.lower():
+                        continue
+                    try:
+                        size = entry.stat().st_size
+                    except OSError:
+                        size = 0
+                    files.append({
+                        "name": entry.name,
+                        "path": rel_path,
+                        "ext": ext,
+                        "size": size,
+                        "is_dir": False,
+                    })
+        except PermissionError:
+            pass
+
+    walk(base, subdir.strip("/"))
+    return {"files": files, "count": len(files)}
+
+
 @router.get("/info")
 def file_info(path: str = Query(..., description="文件相对路径")):
     """获取单个文件信息"""
