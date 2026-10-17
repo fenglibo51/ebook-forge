@@ -238,10 +238,23 @@ const LibraryPage = {
     const keepSrc = document.getElementById("batch-keep-source")?.checked ?? true;
     const n = this.selected.size;
 
-    // 转换前统一确认：把「数量 + 目标格式 + 是否保留原文件」都摆出来，
+    // 按格式统计选中文件，让确认框能一眼看清"这一批都是什么"
+    const extCount = {};
+    this.selected.forEach(p => {
+      const m = p.match(/\.([^./\\]+)$/);
+      const ext = m ? m[1].toLowerCase() : "未知";
+      extCount[ext] = (extCount[ext] || 0) + 1;
+    });
+    const extLines = Object.entries(extCount)
+      .sort((a, b) => b[1] - a[1])
+      .map(([ext, cnt]) => `  · ${ext.toUpperCase()}：${cnt} 个`)
+      .join("\n");
+
+    // 转换前统一确认：数量 + 格式构成 + 目标格式 + 是否保留原文件，
     // 防止误点全选后手滑，一次转掉一大批文件
     let msg = "确认执行批量转换？\n\n";
     msg += `文件数量：${n} 个\n`;
+    msg += extLines + "\n\n";
     msg += `目标格式：${format.toUpperCase()}\n`;
     msg += keepSrc
       ? "保留原文件：是\n"
