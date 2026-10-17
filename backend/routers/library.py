@@ -2,7 +2,10 @@ from fastapi import APIRouter, HTTPException, Query
 from pathlib import Path
 from typing import Optional
 
-from ..services.file_manager import list_books, get_breadcrumbs, scan_file, rename_file, batch_rename as batch_rename_files
+from ..services.file_manager import (
+    list_books, get_breadcrumbs, scan_file, rename_file,
+    batch_rename as batch_rename_files, dir_has_ext,
+)
 from ..config import BOOK_PATH, SUPPORTED_FORMATS
 
 router = APIRouter(prefix="/api/library", tags=["library"])
@@ -10,12 +13,25 @@ router = APIRouter(prefix="/api/library", tags=["library"])
 
 @router.get("/browse")
 def browse(subdir: str = "", filter_ext: Optional[str] = None):
-    """浏览书库目录"""
+    """浏览书库目录
+
+    filter_ext 同时作用于目录：只有内部（递归）真的含有该格式的目录才会显示，
+    否则筛选后还会剩一堆无关目录，等于没筛。
+    """
     items = list_books(subdir)
-    
+
     if filter_ext:
-        items = [it for it in items if it.get("ext") == filter_ext.lower() or it.get("is_dir")]
-    
+        e = filter_ext.lower()
+        filtered = []
+        for it in items:
+            if it.get("is_dir"):
+                # 目录：递归检查内部是否有该格式的文件
+                if dir_has_ext(Path(BOOK_PATH) / it["path"], e):
+                    filtered.append(it)
+            elif it.get("ext") == e:
+                filtered.append(it)
+        items = filtered
+
     breadcrumbs = get_breadcrumbs(subdir)
     
     # 统计

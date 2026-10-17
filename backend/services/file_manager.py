@@ -25,6 +25,23 @@ def _rel_to_abs(rel_path: str) -> Path:
     return _BOOK / rel_path
 
 
+def dir_has_ext(dir_path: Path, ext: str) -> bool:
+    """递归检查目录下是否存在指定扩展名的文件（找到第一个立即返回，短路优化）
+
+    用于书库按格式筛选：只有真正包含目标格式的目录才显示，
+    否则筛选后还剩一堆空目录，等于没筛。
+    """
+    want = "." + ext.lower().lstrip(".")
+    try:
+        for _root, _dirs, files in os.walk(dir_path):
+            for f in files:
+                if f.lower().endswith(want):
+                    return True
+    except (PermissionError, OSError):
+        pass
+    return False
+
+
 def list_books(subdir: str = "") -> list[dict]:
     """列出书库目录内容"""
     target = _BOOK
