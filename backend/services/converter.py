@@ -71,6 +71,42 @@ def _apply_naming_rule(rule: str, title: str, author: str, ext: str, year: Optio
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif")
 
 
+def _ensure_local(path: Path, min_size: int = 1 << 20) -> tuple:
+    """把网络挂载盘上的文件先复制到本地 temp，返回 (可读路径, 临时目录或 None)
+
+    背景：CD2 / 115 / WebDAV 这类 FUSE 挂载，随机读极慢 ——
+    zip/rar/pdf 解析会做几百次 seek，每次都可能触发网络往返 + 网盘 API 调用，
+    比本地磁盘慢几十倍。整体顺序复制一次（O(1) 次网络传输）再本地解析，
+    能把「请求次数 × 延迟」的损耗干掉。
+
+    本地磁盘场景：多一次 1MB+ 的文件复制（约 0.1 秒），可忽略。
+    """
+    try:
+        if path.stat().st_size < min_size:
+            return path, None
+        base = TEMP_DIR if Path(TEMP_DIR).exists() else None
+        tmpdir = Path(tempfile.mkdtemp(prefix="src_", dir=base))
+        local = tmpdir / path.name
+        shutil.copy2(str(path), str(local))
+        return local, tmpdir
+    except Exception:
+        # 复制失败（权限/空间/网络抖动）就退回原路径，不让优化影响主流程
+        return path, None
+
+
+def _with_local_source(fn, source: Path, *args):
+    """先把网盘源本地化，再调用提取器，用完清理临时副本
+
+    用法：ok, err, pages = _with_local_source(_extract_pdf_to_cbz, source, output_path)
+    """
+    src, tmpdir = _ensure_local(source)
+    try:
+        return fn(src, *args)
+    finally:
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def _extract_images_to_cbz(epub_path: Path, out_cbz: Path) -> tuple:
     """漫画 epub → CBZ：无损、秒级。
 
@@ -141,12 +177,17 @@ def _extract_images_to_cbz(epub_path: Path, out_cbz: Path) -> tuple:
             if not ordered:
                 return False, "这本 epub 里没有图片，无法转换为 CBZ", 0
 
-            # 防呆：图片太少或占体积比例过低 → 不是漫画
-            # （小说类 epub 通常只有 1 张封面图，直接提取会产出只有一页的垃圾 cbz）
             total_size = sum(i.file_size for i in z.infolist())
             img_size = sum(z.getinfo(n).file_size for n in ordered)
             ratio = (img_size / total_size) if total_size else 0
-            if len(ordered) < 5 or ratio < 0.3:
+
+            # 防呆：整卷漫画图片肯定多；但「番外 / 短篇」只有 4 页也还是漫画。
+            # 判据 = (页数够多 且 图片占比不算低)  → 整卷漫画
+            #      或 (图片占比极高 且 不止一张图) → 4 页番外：图片 4 张占 99%
+            # 后一条仍拦得住小说 epub —— 小说通常只有 1 张封面图，图片数不到 2。
+            looks_comic = (len(ordered) >= 5 and ratio >= 0.3) or \
+                          (len(ordered) >= 2 and ratio >= 0.85)
+            if not looks_comic:
                 return False, (f"这本 epub 不像漫画（图片 {len(ordered)} 张、约占体积 {ratio:.0%}），"
                                f"没有可提取的漫画内容。小说类书籍请转 EPUB / TXT / MOBI 等格式"), 0
 
@@ -330,26 +371,26 @@ def convert_file(source_path: str, target_format: str, naming_rule: str = "{titl
             output_path.unlink()
 
         if ext in ZIP_LIKE:
-            # zip / cbz：内容等价，直接复制改名（秒级、无损）
+            # zip / cbz：内容等价，直接复制改名（顺序读，无需本地化）
             shutil.copy2(str(source), str(output_path))
         elif ext in ARCHIVE_LIKE:
-            # cbr / cb7 / cbc：unar 解压取图 → 重新打包成 zip
-            ok, err, pages = _extract_archive_to_cbz(source, output_path)
+            # cbr / cb7 / cbc：先把网盘源拉到本地再解压（rar/7z 解析是随机读）
+            ok, err, pages = _with_local_source(_extract_archive_to_cbz, source, output_path)
             if not ok:
                 return {"success": False, "error": err}
         elif ext == "pdf":
-            # 扫描版漫画 PDF：pdfimages 无损提取内嵌图（矢量 PDF 会被明确拒绝）
-            ok, err, pages = _extract_pdf_to_cbz(source, output_path)
+            # 扫描版漫画 PDF：pdfimages 无损提取（同样先本地化）
+            ok, err, pages = _with_local_source(_extract_pdf_to_cbz, source, output_path)
             if not ok:
                 return {"success": False, "error": err}
         elif ext in ("mobi", "azw3"):
             # Kindle 漫画：先转 epub，再按 epub 无损提取图片
-            ok, err, pages = _kindle_to_cbz(source, output_path)
+            ok, err, pages = _with_local_source(_kindle_to_cbz, source, output_path)
             if not ok:
                 return {"success": False, "error": err}
         else:
             # epub：按 OPF spine 阅读顺序提取内嵌图片
-            ok, err, pages = _extract_images_to_cbz(source, output_path)
+            ok, err, pages = _with_local_source(_extract_images_to_cbz, source, output_path)
             if not ok:
                 return {"success": False, "error": err}
         final_path = output_path
@@ -386,7 +427,7 @@ def convert_file(source_path: str, target_format: str, naming_rule: str = "{titl
         if ext == "zip":
             shutil.copy2(str(source), str(cbz_tmp))
         else:
-            ok, err, pages = _extract_archive_to_cbz(source, cbz_tmp)
+            ok, err, pages = _with_local_source(_extract_archive_to_cbz, source, cbz_tmp)
             if not ok:
                 return {"success": False, "error": err}
         real_input = cbz_tmp
