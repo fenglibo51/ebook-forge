@@ -1,11 +1,14 @@
-"""文字书排版（L1）+ PDF 输出。
+"""文字书排版（L1 → L2）+ PDF 输出。
 
-L1 的能力边界（按之前定的档位）：
+L2 在 L1 之上补了「中文排版细节」：
 
-    单栏分页、章节另起页、页码、图片按可用宽度等比缩放
-    中文按字符断行、英文按词断行、首行缩进 2 字符、1.5 倍行距
+    行首禁则      。，、）」』等不落行首（拉回上一行）
+    行尾禁则      （「《 等开括号不落行尾（推到下一行）
+    标点挤压      行末标点、连续标点按半角宽度排
+    中英混排间距  中文与英文/数字之间加 1/4 em 空隙
+    孤行控制      标题后面至少跟 2 行正文；段落末行不单独成页
 
-不做（P5）：行首行尾禁则、标点挤压、中英混排间距、孤行控制、脚注。
+不做：脚注（EPUB 的脚注结构各家不同，收益低风险高）、多栏、图文环绕。
 
 PDF 侧用 Type0 + CIDFontType2（Identity-H 编码 + CIDToGIDMap /Identity），
 字体做子集化 —— 不然每本书都要背 10MB 的 Noto Sans SC。
@@ -28,6 +31,13 @@ DEFAULT_FONT_CANDIDATES = (
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
 )
 
+# 行首禁则：这些字符不能出现在一行开头
+NO_LINE_START = set("，。、；：？！）】》」』〕〉》”’…—～·%,.;:?!)]}>")
+# 行尾禁则：这些字符不能出现在一行末尾
+NO_LINE_END = set("（【《「『〔〈“‘([{<")
+# 可以压缩到半角宽度的标点
+SQUEEZABLE = set("，。、；：？！）】》」』〕〉”’…—～·%,.;:?!)]}>（【《「『〔〈“‘([{<")
+
 
 class LayoutError(ValueError):
     pass
@@ -40,6 +50,14 @@ class Line:
     y: float
     size: float
     is_title: bool = False
+    gaps: dict[int, float] = field(default_factory=dict)     # 第 i 个字前额外空隙
+    squeeze: dict[int, float] = field(default_factory=dict)  # 第 i 个字宽度缩放（0.5 = 半角）
+    line_scale: float = 1.0                                 # 整行横向缩放（标点压完还超时用）
+
+    @property
+    def width(self) -> float:
+        """实际排版宽度（含空隙、扣压缩）"""
+        return self._w if hasattr(self, "_w") else 0.0
 
 
 @dataclass
@@ -96,6 +114,93 @@ def _width(font: TrueTypeFont, text: str, size: float) -> float:
     """文字在给定字号下的宽度（pt）"""
     units = font.text_width(text)
     return units * size / font.units_per_em
+
+
+def _char_width(font: TrueTypeFont, ch: str, size: float) -> float:
+    return font.advance(font.gid(ch)) * size / font.units_per_em
+
+
+def _is_cjk(ch: str) -> bool:
+    o = ord(ch)
+    return (0x4E00 <= o <= 0x9FFF or 0x3400 <= o <= 0x4DBF
+            or 0x3000 <= o <= 0x303F or 0xFF00 <= o <= 0xFFEF)
+
+
+def _is_word_char(ch: str) -> bool:
+    return ch.isascii() and (ch.isalnum() or ch in "+-_/@#&")
+
+
+def line_width(font: TrueTypeFont, ln: "Line", size: float) -> float:
+    """一行的实际宽度（含空隙、扣压缩）"""
+    w = 0.0
+    for i, ch in enumerate(ln.text):
+        w += ln.gaps.get(i, 0.0)
+        cw = _char_width(font, ch, size)
+        if i in ln.squeeze:
+            cw *= ln.squeeze[i]
+        w += cw
+    return w
+
+
+def apply_kinsoku(font: TrueTypeFont, lines: list["Line"], size: float) -> None:
+    """行首行尾禁则：标点该往哪边挪就挪，不留在错误的位置。"""
+    for _ in range(4):
+        changed = False
+        # 行首禁则：把禁则标点拉回上一行
+        for i in range(1, len(lines)):
+            ln = lines[i]
+            while ln.text and ln.text[0] in NO_LINE_START:
+                lines[i - 1].text += ln.text[0]
+                ln.text = ln.text[1:]
+                ln.gaps = {k - 1: v for k, v in ln.gaps.items() if k >= 1}
+                ln.squeeze = {k - 1: v for k, v in ln.squeeze.items() if k >= 1}
+                changed = True
+        # 行尾禁则：把开括号/开引号推到下一行
+        for i in range(len(lines) - 1):
+            ln = lines[i]
+            while ln.text and ln.text[-1] in NO_LINE_END:
+                ch = ln.text[-1]
+                ln.text = ln.text[:-1]
+                nxt = lines[i + 1]
+                nxt.text = ch + nxt.text
+                nxt.gaps = {k + 1: v for k, v in nxt.gaps.items()}
+                nxt.squeeze = {k + 1: v for k, v in nxt.squeeze.items()}
+                changed = True
+        if not changed:
+            break
+
+
+def squeeze_overflow(font: TrueTypeFont, lines: list["Line"],
+                     avail: float, size: float) -> None:
+    """禁则把标点挪过来之后行会变宽，先把可压缩的标点收成半角。
+
+    标点压完还超（连续好几个标点被拉到同一行），再整行横向微缩 ——
+    上限 8%，再超就让它悬挂（专业排版允许标点探出版心）。
+    """
+    for ln in lines:
+        w = line_width(font, ln, size)
+        if w <= avail + 0.01:
+            continue
+        for i in range(len(ln.text) - 1, -1, -1):
+            if w <= avail + 0.01:
+                break
+            ch = ln.text[i]
+            if ch in SQUEEZABLE and i not in ln.squeeze:
+                w -= _char_width(font, ch, size) * 0.5
+                ln.squeeze[i] = 0.5
+        if w > avail + 0.01:
+            ln.line_scale = max(avail / w, 0.92)
+
+
+def mark_cjk_ascii_gaps(font: TrueTypeFont, lines: list["Line"], size: float) -> None:
+    """中英混排：中文和英文/数字交界处加 1/4 em 空隙。"""
+    gap = size * 0.25
+    for ln in lines:
+        t = ln.text
+        for i in range(1, len(t)):
+            a, b = t[i - 1], t[i]
+            if (_is_cjk(a) and _is_word_char(b)) or (_is_word_char(a) and _is_cjk(b)):
+                ln.gaps[i] = gap
 
 
 def break_lines(font: TrueTypeFont, text: str, avail: float, size: float,
@@ -179,7 +284,8 @@ def layout_book(book: TextBook, font: TrueTypeFont, *,
             new_page()
 
         if ch.title:
-            ensure(title_line_h)
+            # 孤行控制：标题后面至少要跟 2 行正文，否则标题孤零零挂在页尾
+            ensure(title_line_h + line_h * 2)
             y -= title_line_h
             pages[-1].lines.append(Line(text=ch.title, x=spec.margin_left,
                                         y=y, size=title_size, is_title=True))
@@ -212,11 +318,21 @@ def layout_book(book: TextBook, font: TrueTypeFont, *,
             text = block.text.strip()
             if not text:
                 continue
-            for i, ln in enumerate(break_lines(font, text, avail, size, indent)):
+            raw = break_lines(font, text, avail, size, indent)
+            lines = [Line(text=t, x=0.0, y=0.0, size=size) for t in raw]
+            # L2 顺序很重要：先把中英间距加上，再算宽度挤压 ——
+            # 反过来的话间距会把行重新撑宽，挤压白做（实测 697 页里 33 行超宽）。
+            apply_kinsoku(font, lines, size)
+            mark_cjk_ascii_gaps(font, lines, size)
+            squeeze_overflow(font, lines, avail, size)
+            for i, ln in enumerate(lines):
+                if not ln.text:
+                    continue
                 ensure(line_h)
                 y -= line_h
-                x = spec.margin_left + (indent if i == 0 else 0.0)
-                pages[-1].lines.append(Line(text=ln, x=x, y=y, size=size))
+                ln.x = spec.margin_left + (indent if i == 0 else 0.0)
+                ln.y = y
+                pages[-1].lines.append(ln)
 
     # 去掉末尾空页
     while len(pages) > 1 and not pages[-1].lines and not pages[-1].images:
@@ -351,11 +467,33 @@ class TextPDFWriter:
             page_ids.append(page_id)
 
             ops = ["BT"]
+            upem = self.font.units_per_em
             for ln in pg.lines:
-                cids = "".join(f"{cp2cid.get(ch, 0):04X}" for ch in ln.text)
                 ops.append(f"/F1 {ln.size:.2f} Tf")
-                ops.append(f"1 0 0 1 {ln.x:.2f} {ln.y:.2f} Tm")
-                ops.append(f"<{cids}> Tj")
+                if not ln.gaps and not ln.squeeze and ln.line_scale == 1.0:
+                    # 快路径：整行一次 Tj（绝大多数行都走这里）
+                    cids = "".join(f"{cp2cid.get(ch, 0):04X}" for ch in ln.text)
+                    ops.append(f"1 0 0 1 {ln.x:.2f} {ln.y:.2f} Tm")
+                    ops.append(f"<{cids}> Tj")
+                    continue
+                # 慢路径：有中英间距 / 标点挤压 / 整行微缩，逐字定位
+                if ln.line_scale != 1.0:
+                    ops.append(f"{ln.line_scale * 100:.1f} Tz")
+                cx = ln.x
+                for i, ch in enumerate(ln.text):
+                    cx += ln.gaps.get(i, 0.0)
+                    cw = self.font.advance(self.font.gid(ch)) * ln.size / upem
+                    sc = ln.squeeze.get(i, 1.0)
+                    ops.append(f"1 0 0 1 {cx:.2f} {ln.y:.2f} Tm")
+                    if sc != 1.0:
+                        ops.append(f"{sc * 100:.1f} Tz")
+                    ops.append(f"<{cp2cid.get(ch, 0):04X}> Tj")
+                    if sc != 1.0:
+                        ops.append(f"{ln.line_scale * 100:.1f} Tz"
+                                   if ln.line_scale != 1.0 else "100 Tz")
+                    cx += cw * sc
+                if ln.line_scale != 1.0:
+                    ops.append("100 Tz")
             ops.append("ET")
 
             # 页码
