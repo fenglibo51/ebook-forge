@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# 测试样本（体积大，需要时从书库重新取）
+samples/*.cbz
+samples/*.zip
+samples/*.epub
+samples/*.pdf
+samples/*.b64
+
+# 保留：README 用截图
+!samples/preview.png
