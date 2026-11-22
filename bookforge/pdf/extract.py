@@ -37,6 +37,7 @@ class RawImage:
     bits: int = 8
     columns: int = 0
     predictor: int = 0
+    raw_stream: bytes = b""   # 解压/反预测**之前**的原始流字节（校验用）
 
     def to_image_bytes(self) -> tuple[bytes, str]:
         """转成可以直接落盘的图片：返回 (bytes, 'jpg'|'jp2'|'png'|'raw')"""
@@ -153,6 +154,7 @@ def extract_images(path: str) -> list[RawImage]:
             bits=d.get("BitsPerComponent", 8),
             columns=d.get("Columns", 0),
             predictor=d.get("Predictor", 0),
+            raw_stream=stream,
         ))
     if not images:
         raise PDFReadError("PDF 里没有图像 XObject")

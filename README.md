@@ -66,9 +66,17 @@ python3 -m unittest discover -s tests
 CBR / CB7 / CBC      还没接（P2 做 7z 解析；RAR 闭源，永久不支持）
 MOBI / AZW3 / TXT    还没做（P1~P3）
 带透明通道的 PNG      能进 PDF，但会拆成 SMask，字节不再一致（像素无损）
+                      解码走纯 Python，约 1.5 秒/页（JPEG 走直通，0.01 秒/页）
 TIFF / WEBP / GIF    明确报错，不静默转码
 GBK 文件名的 zip      条目名会显示成乱码（不影响转换，因为写入时重编号）
 ```
+
+防炸：单页解压超 256MB、整包解压超 4GB 直接拒（`BOOKFORGE_MAX_PAGE_MB` /
+`BOOKFORGE_MAX_TOTAL_MB` 可调）。用压缩包里声明的大小预判，不解压就能拦住。
+`zip → cbz` 是容器等价复制，不解压，百 GB 的包也照过。
+
+⚠️ 所有页一次性读进内存（25 页 / 29MB 实测峰值 152MB）。500 页以上的大包会撞上限，
+流式处理排在 P1。
 
 ## 路线图
 

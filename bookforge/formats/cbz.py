@@ -13,6 +13,7 @@ CBZ = ZIP，所以读就是解 zip、写就是打包。关键是**图片字节�
 
 from __future__ import annotations
 
+import os
 import re
 import xml.etree.ElementTree as ET
 import zipfile
@@ -22,6 +23,12 @@ from ..model import IMAGE_EXTS, ComicBook, Page, normalize_fmt
 from . import png
 
 JUNK_NAMES = {".ds_store", "thumbs.db", "desktop.ini", "comicinfo.xml"}
+
+# 解压炸弹防护：用 zipinfo.file_size（压缩包里声明的解压后大小）预判，
+# 不需要真解压就能拦住「几百 KB 解出几十 GB」的包。
+MAX_TOTAL_BYTES = int(os.environ.get("BOOKFORGE_MAX_TOTAL_MB", "4096")) << 20
+MAX_PAGE_BYTES = int(os.environ.get("BOOKFORGE_MAX_PAGE_MB", "256")) << 20
+
 
 # 图片已压缩，再 deflate 一遍只是浪费时间；PNG/BMP 这种反而能省点空间
 _STORED_EXTS = {".jpg", ".jpeg", ".jp2", ".jpx", ".gif", ".webp"}
@@ -75,10 +82,23 @@ def read(path: str | Path) -> ComicBook:
         names = [n for n in zf.namelist()
                  if not n.endswith("/") and not _is_junk(n)
                  and Path(n).suffix.lower() in IMAGE_EXTS]
+        # 重名条目（zip 规范允许）只取一次，避免同一张图重复成两页
+        names = list(dict.fromkeys(names))
         names.sort(key=natural_key)
+
+        total = sum(zf.getinfo(n).file_size for n in names)
+        if total > MAX_TOTAL_BYTES:
+            raise ValueError(
+                f"压缩包解压后约 {total / 2**30:.1f} GB，超过上限 "
+                f"{MAX_TOTAL_BYTES / 2**30:.0f} GB（BOOKFORGE_MAX_TOTAL_MB 可调）")
 
         pages: list[Page] = []
         for n in names:
+            info = zf.getinfo(n)
+            if info.file_size > MAX_PAGE_BYTES:
+                raise ValueError(
+                    f"单页 {n} 解压后 {info.file_size / 2**20:.0f} MB，超过上限 "
+                    f"{MAX_PAGE_BYTES / 2**20:.0f} MB")
             data = zf.read(n)
             w, h, fmt = png.image_size(data)
             pages.append(Page(
@@ -89,6 +109,14 @@ def read(path: str | Path) -> ComicBook:
         meta = _read_comicinfo(zf)
 
     return ComicBook(pages=pages, metadata=meta, source_format="cbz")
+
+
+def _safe_entry_name(name: str, fallback: str) -> str:
+    """keep_names 时消毒条目名：去掉绝对路径和 ..，避免解压时逃出目标目录。"""
+    parts = [p for p in name.replace("\\", "/").split("/")
+             if p not in ("", ".", "..")]
+    clean = "/".join(parts)
+    return clean or fallback
 
 
 def write(book: ComicBook, path: str | Path, *, keep_names: bool = False) -> Path:
@@ -105,7 +133,7 @@ def write(book: ComicBook, path: str | Path, *, keep_names: bool = False) -> Pat
         for i, page in enumerate(book.pages, 1):
             ext = "." + page.fmt.replace("jpeg", "jpg")
             if keep_names and page.name:
-                name = page.name
+                name = _safe_entry_name(page.name, f"{i:0{width}d}{ext}")
             else:
                 name = f"{i:0{width}d}{ext}"
             comp = (zipfile.ZIP_STORED if ext.lower() in _STORED_EXTS
