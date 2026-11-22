@@ -261,3 +261,235 @@ def write(book: ComicBook, path: str | Path, *, title: str = "",
         zf.writestr("OEBPS/content.opf", opf, compress_type=zipfile.ZIP_DEFLATED)
 
     return path
+
+
+# ── 文字版 EPUB（小说，reflowable）────────────────────────────────────────
+
+from html.parser import HTMLParser      # noqa: E402
+from ..model import Chapter as _Chapter, ImageBlock, Paragraph, TextBook  # noqa: E402
+
+_MEDIA_ALIAS = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png",
+                "jp2": "jp2", "gif": "gif", "webp": "webp"}
+
+
+class _BlockParser(HTMLParser):
+    """把一章 xhtml 拆成 标题 / 段落 / 图片 的序列。
+
+    不追求完整 HTML 语义，只要能还原「读起来是什么样」：
+    块级标签断段，<br> 当空格，img 记下 src 由调用方去 zip 里取。
+    """
+
+    _BLOCK = {"p", "div", "li", "blockquote", "td", "section", "article"}
+    _HEAD = {"h1", "h2", "h3", "h4", "h5", "h6"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.items: list[tuple[str, str]] = []
+        self._buf: list[str] = []
+        self._in_head = ""
+        self._skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        # head 里的一切都不是正文：<title>书名</title> 会被当成段落读进来，
+        # 实测导致每章多出一段标题文字（字数差 0.24%）。
+        if tag in ("script", "style", "head"):
+            self._skip += 1
+        elif tag in self._HEAD:
+            self._flush()
+            self._in_head = tag
+        elif tag in self._BLOCK:
+            self._flush()
+        elif tag == "br":
+            self._buf.append(" ")
+        elif tag == "img":
+            src = dict(attrs).get("src") or ""
+            if src:
+                self._flush()
+                self.items.append(("img", src))
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style", "head"):
+            self._skip = max(0, self._skip - 1)
+        elif tag in self._HEAD:
+            self._flush()
+            self._in_head = ""
+        elif tag in self._BLOCK:
+            self._flush()
+
+    def handle_data(self, data):
+        if not self._skip:
+            self._buf.append(data)
+
+    def _flush(self):
+        text = " ".join("".join(self._buf).split())
+        self._buf.clear()
+        if text:
+            self.items.append(("h" if self._in_head else "p", text))
+
+
+def read_text(path: str | Path) -> TextBook:
+    """文字版 EPUB → TextBook。按 spine 顺序，一章一段。"""
+    path = Path(path)
+    try:
+        zf = zipfile.ZipFile(path)
+    except zipfile.BadZipFile:
+        raise EPUBError("epub 文件损坏（不是有效的 zip 结构）")
+
+    with zf:
+        names = set(zf.namelist())
+        opf_path = _read_opf_path(zf)
+        opf = zf.read(opf_path).decode("utf-8", "ignore")
+        manifest, spine, meta = _parse_opf(opf)
+        base = posixpath.dirname(opf_path)
+
+        chapters: list[_Chapter] = []
+
+        for sid in spine:
+            href = manifest.get(sid)
+            if not href:
+                continue
+            full = posixpath.normpath(posixpath.join(base, href) if base else href)
+            if full not in names:
+                continue
+            ext = posixpath.splitext(full)[1].lower()
+            if ext not in (".html", ".xhtml", ".htm", ".svg"):
+                continue
+
+            parser = _BlockParser()
+            try:
+                parser.feed(zf.read(full).decode("utf-8", "ignore"))
+            except Exception:
+                continue
+            if not parser.items:
+                continue
+
+            ch = _Chapter(title="")
+            sub = posixpath.dirname(full)
+            for kind, value in parser.items:
+                if kind == "h" and not ch.title:
+                    ch.title = value
+                elif kind == "img":
+                    target = posixpath.normpath(
+                        posixpath.join(sub, value.split("#")[0]) if sub else value)
+                    if target in names:
+                        data = zf.read(target)
+                        w, h, fmt = png.image_size(data)
+                        ch.blocks.append(ImageBlock(
+                            data=data, fmt=fmt or "jpeg", width=w, height=h))
+                else:
+                    ch.blocks.append(Paragraph(text=value))
+
+            if ch.title or ch.blocks:
+                if not ch.title:
+                    ch.title = f"第 {len(chapters) + 1} 章"
+                chapters.append(ch)
+
+    if not chapters:
+        raise EPUBError("这本 epub 里没有可提取的正文（可能是纯图片漫画）")
+    return TextBook(chapters=chapters, metadata=meta, source_format="epub")
+
+
+def write_text(book: TextBook, path: str | Path, *, title: str = "",
+               author: str = "", language: str = "zh") -> Path:
+    """TextBook → 文字版 EPUB3（带 ncx）。图片原字节内嵌。"""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    meta = book.metadata or {}
+    title = title or meta.get("title") or path.stem
+    author = author or meta.get("author") or ""
+    lang = meta.get("language") or language
+    chapters = book.chapters or [_Chapter(title=title)]
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    items: list[str] = []
+    refs: list[str] = []
+    nav: list[str] = []
+    ncx_points: list[str] = []
+    media: dict[str, bytes] = {}
+
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        zf.writestr(_CONTAINER, _CONTAINER_XML, compress_type=zipfile.ZIP_DEFLATED)
+
+        for idx, ch in enumerate(chapters, 1):
+            body: list[str] = []
+            if ch.title:
+                body.append(f"<h1>{_esc(ch.title)}</h1>")
+            for block in ch.blocks:
+                if isinstance(block, Paragraph):
+                    if block.text.strip():
+                        body.append(f"<p>{_esc(block.text)}</p>")
+                elif isinstance(block, ImageBlock):
+                    ext = "." + block.fmt.replace("jpeg", "jpg")
+                    name = f"images/{idx:04d}-{len(media) + 1:02d}{ext}"
+                    media[name] = block.data
+                    body.append(f'<p class="img"><img src="../{name}" alt=""/></p>')
+
+            xhtml = ('<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n'
+                     f'<html xmlns="http://www.w3.org/1999/xhtml" '
+                     f'xmlns:epub="http://www.idpf.org/2007/ops" '
+                     f'lang="{_esc(lang)}" xml:lang="{_esc(lang)}">\n'
+                     f'<head><meta charset="utf-8"/>'
+                     f'<title>{_esc(ch.title or str(idx))}</title>'
+                     '<style>body{margin:1em} p{margin:0;text-indent:2em;line-height:1.6}'
+                     ' h1{font-size:1.4em;margin:1.5em 0 1em}'
+                     ' p.img{text-indent:0;text-align:center}'
+                     ' p.img img{max-width:100%}</style></head>\n'
+                     '<body>\n' + "\n".join(body) + '\n</body>\n</html>')
+            page = f"text/ch{idx:04d}.xhtml"
+            zf.writestr("OEBPS/" + page, xhtml, compress_type=zipfile.ZIP_DEFLATED)
+            items.append(f'    <item id="ch{idx}" href="{page}" '
+                         'media-type="application/xhtml+xml"/>')
+            refs.append(f'    <itemref idref="ch{idx}"/>')
+            label = _esc(ch.title or f"第 {idx} 章")
+            nav.append(f'<li><a href="{page}">{label}</a></li>')
+            ncx_points.append(
+                f'  <navPoint id="np{idx}" playOrder="{idx}">'
+                f'<navLabel><text>{label}</text></navLabel>'
+                f'<content src="{page}"/></navPoint>')
+
+        for i, (name, data) in enumerate(media.items(), 1):
+            zf.writestr("OEBPS/" + name, data, compress_type=zipfile.ZIP_STORED)
+            ext = name.rsplit(".", 1)[-1].lower()
+            mt = _MEDIA.get(_MEDIA_ALIAS.get(ext, "jpeg"), "image/jpeg")
+            items.append(f'    <item id="img{i}" href="{name}" media-type="{mt}"/>')
+
+        nav_xhtml = ('<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n'
+                     f'<html xmlns="http://www.w3.org/1999/xhtml" '
+                     f'xmlns:epub="http://www.idpf.org/2007/ops" '
+                     f'lang="{_esc(lang)}" xml:lang="{_esc(lang)}">\n'
+                     f'<head><meta charset="utf-8"/>'
+                     f'<title>{_esc(title)}</title></head>\n'
+                     '<body><nav epub:type="toc" id="toc"><h1>目录</h1><ol>\n'
+                     + "".join(nav) + '\n</ol></nav></body></html>')
+        zf.writestr("OEBPS/nav.xhtml", nav_xhtml, compress_type=zipfile.ZIP_DEFLATED)
+
+        ncx = ('<?xml version="1.0" encoding="utf-8"?>\n'
+               '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">\n'
+               f'<head><meta name="dtb:uid" content="{_esc(path.stem)}"/>'
+               '<meta name="dtb:depth" content="1"/></head>\n'
+               f'<docTitle><text>{_esc(title)}</text></docTitle>\n'
+               '<navMap>\n' + "\n".join(ncx_points) + '\n</navMap>\n</ncx>')
+        zf.writestr("OEBPS/toc.ncx", ncx, compress_type=zipfile.ZIP_DEFLATED)
+
+        opf = ('<?xml version="1.0" encoding="utf-8"?>\n'
+               '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" '
+               'unique-identifier="bookid">\n'
+               '  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">\n'
+               f'    <dc:identifier id="bookid">{_esc(path.stem)}</dc:identifier>\n'
+               f'    <dc:title>{_esc(title)}</dc:title>\n'
+               f'    <dc:language>{_esc(lang)}</dc:language>\n'
+               + (f'    <dc:creator>{_esc(author)}</dc:creator>\n' if author else "")
+               + f'    <meta property="dcterms:modified">{now}</meta>\n'
+               '  </metadata>\n  <manifest>\n'
+               + "\n".join(items)
+               + '\n    <item id="nav" href="nav.xhtml" '
+                 'media-type="application/xhtml+xml" properties="nav"/>'
+                 '\n    <item id="ncx" href="toc.ncx" '
+                 'media-type="application/x-dtbncx+xml"/>\n'
+               '  </manifest>\n  <spine toc="ncx">\n'
+               + "\n".join(refs)
+               + '\n  </spine>\n</package>')
+        zf.writestr("OEBPS/content.opf", opf, compress_type=zipfile.ZIP_DEFLATED)
+
+    return path

@@ -119,6 +119,50 @@ def _safe_entry_name(name: str, fallback: str) -> str:
     return clean or fallback
 
 
+def read_cb7(path: str | Path) -> ComicBook:
+    """CB7 / CBC → ComicBook。7z 里可能是图片，也可能嵌着 cbz（CBC 集合）。"""
+    from . import sevenz
+
+    path = Path(path)
+    files = sevenz.read_all(path)
+
+    # CBC 里可能嵌着 cbz/zip：递归一层
+    nested = [n for n in files if Path(n).suffix.lower() in (".cbz", ".zip")]
+    if nested and not any(Path(n).suffix.lower() in IMAGE_EXTS for n in files):
+        import io
+        merged: list[Page] = []
+        for n in sorted(nested, key=natural_key):
+            try:
+                with zipfile.ZipFile(io.BytesIO(files[n])) as zf:
+                    inner = [x for x in zf.namelist()
+                             if not x.endswith("/") and not _is_junk(x)
+                             and Path(x).suffix.lower() in IMAGE_EXTS]
+                    inner.sort(key=natural_key)
+                    for x in inner:
+                        data = zf.read(x)
+                        w, h, fmt = png.image_size(data)
+                        merged.append(Page(data=data,
+                                           fmt=fmt or normalize_fmt(Path(x).suffix),
+                                           width=w, height=h, name=x))
+            except zipfile.BadZipFile:
+                continue
+        if merged:
+            return ComicBook(pages=merged, metadata={"title": path.stem},
+                             source_format=path.suffix.lstrip("."))
+
+    names = [n for n in files
+             if not _is_junk(n) and Path(n).suffix.lower() in IMAGE_EXTS]
+    names.sort(key=natural_key)
+    pages: list[Page] = []
+    for n in names:
+        data = files[n]
+        w, h, fmt = png.image_size(data)
+        pages.append(Page(data=data, fmt=fmt or normalize_fmt(Path(n).suffix),
+                          width=w, height=h, name=n))
+    return ComicBook(pages=pages, metadata={"title": path.stem},
+                     source_format=path.suffix.lstrip("."))
+
+
 def write(book: ComicBook, path: str | Path, *, keep_names: bool = False) -> Path:
     """ComicBook → CBZ。
 

@@ -8,9 +8,15 @@
 ## 现在能做什么
 
 ```
-CBZ / ZIP        →  CBZ / ZIP / EPUB / PDF
-EPUB(漫画)       →  CBZ / EPUB / PDF
-PDF(图片型漫画)  →  CBZ / EPUB / PDF
+漫画链
+  CBZ / ZIP              →  CBZ / ZIP / EPUB / PDF
+  CB7 / CBC（7z）        →  CBZ / EPUB / PDF
+  EPUB(漫画)             →  CBZ / EPUB / PDF
+  PDF(图片型漫画)        →  CBZ / EPUB / PDF
+
+文字链
+  TXT / FB2 / DOCX       →  TXT / FB2 / DOCX / EPUB
+  EPUB(小说)             →  TXT / FB2 / DOCX / EPUB
 ```
 
 图片一律**原字节直嵌**：JPEG 走 DCTDecode、JPEG2000 走 JPXDecode、PNG 走 FlateDecode
@@ -19,7 +25,7 @@ PDF(图片型漫画)  →  CBZ / EPUB / PDF
 PDF 输出也一样：PDF 里的 Flate 流可以直接当 PNG 的 IDAT（两边行滤波规范相同），
 所以 PDF → CBZ 也是零解码零重压。
 
-**不依赖任何外部二进制** —— 没有 poppler、没有 Calibre、没有 unar。
+**不依赖任何外部二进制** —— 没有 poppler、没有 Calibre、没有 unar、没有 p7zip。
 
 ## 怎么用
 
@@ -69,12 +75,14 @@ python3 -m unittest discover -s tests
 ## 已知限制
 
 ```
-CBR / CB7 / CBC      还没接（P2 做 7z 解析；RAR 闭源，永久不支持）
-MOBI / AZW3 / TXT    还没做（P2~P4）
+CBR（RAR）            永久不支持：RAR5 算法闭源，纯 Python 无实现
+MOBI / AZW3           还没做（P3）
 带透明通道的 PNG      能进 PDF，但会拆成 SMask，字节不再一致（像素无损）
                       解码走纯 Python，约 1.5 秒/页（JPEG 走直通，0.01 秒/页）
-TIFF / WEBP / GIF    明确报错，不静默转码
+TIFF / WEBP / GIF     明确报错，不静默转码
 GBK 文件名的 zip      条目名会显示成乱码（不影响转换，因为写入时重编号）
+文字 → PDF            需要排版引擎（P4），现在明确报错
+DOCX 输出             暂不支持嵌图（会跳过并提示数量）
 ```
 
 PDF 作为源时：

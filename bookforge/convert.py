@@ -18,9 +18,63 @@ from .pdf.writer import A4, A5, PDFWriter
 __version__ = "0.1.0"
 
 COMIC_INPUTS = {".cbz", ".zip", ".cbr", ".cb7", ".cbc"}
-# P0 支持的源（cbr/cb7/cbc 在 P2 接 7z / RAR 处理）
-P0_INPUTS = {".cbz", ".zip", ".epub"}
+# 漫画源（→ cbz / zip / epub / pdf）
+P0_INPUTS = {".cbz", ".zip", ".epub", ".pdf"}
 P0_TARGETS = {"cbz", "zip", "epub", "pdf"}
+# 文字书（→ txt / fb2 / docx / epub）
+TEXT_INPUTS = {".txt", ".fb2", ".docx", ".epub"}
+TEXT_TARGETS = {"txt", "fb2", "docx", "epub"}
+
+
+def _epub_is_comic(path: Path) -> bool:
+    """epub 是漫画还是小说？判据同 P0：页数 + 图片占体积比。"""
+    try:
+        comic = epub.read(path)
+        return epub.looks_like_comic(comic, path.stat().st_size)
+    except Exception:
+        return False        # 读不出图（纯文字 epub）→ 不是漫画
+
+
+def read_text_book(path: str | Path):
+    """文字源 → TextBook。epub 走文字解析（不是漫画的取图路径）。"""
+    from .formats import docx as docx_mod, fb2, txt_io
+    from .model import TextBook
+
+    path = Path(path)
+    ext = path.suffix.lower()
+    if ext == ".txt":
+        return txt_io.read(path)
+    if ext == ".fb2":
+        return fb2.read(path)
+    if ext == ".docx":
+        return docx_mod.read(path)
+    if ext == ".epub":
+        return epub.read_text(path)
+    raise ConvertError(f"文字路径不支持源格式 {ext}")
+
+
+def write_text_book(book, target: str, out: Path) -> tuple[Path, str]:
+    """TextBook → 目标容器。返回 (输出路径, 提示)。"""
+    from .formats import docx as docx_mod, fb2, txt_io
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if target == "txt":
+        out.write_bytes(txt_io.to_bytes(book))
+        return out, ""
+    if target == "fb2":
+        out.write_bytes(fb2.to_bytes(book))
+        return out, ""
+    if target == "docx":
+        data, skipped = docx_mod.to_bytes(book)
+        out.write_bytes(data)
+        note = f"docx 输出暂不支持嵌图，跳过 {skipped} 张图片" if skipped else ""
+        return out, note
+    if target == "epub":
+        epub.write_text(book, out,
+                        title=(book.metadata or {}).get("title", ""),
+                        author=(book.metadata or {}).get("author", ""))
+        return out, ""
+    raise ConvertError(f"文字路径不支持目标格式 {target}")
 
 
 class ConvertError(Exception):
@@ -38,7 +92,9 @@ def read_comic(path: str | Path) -> ComicBook:
         from .pdf.to_comic import pdf_to_comic
         return pdf_to_comic(path)
     if ext in (".cbr", ".cb7", ".cbc"):
-        raise ConvertError(f"{ext} 还没实现（P2 接 7z / RAR）")
+        if ext == ".cbr":
+            raise ConvertError("CBR（RAR）不支持：RAR5 算法闭源，纯 Python 无实现")
+        return cbz.read_cb7(path)
     raise ConvertError(f"不支持的源格式 {ext}")
 
 
@@ -55,12 +111,32 @@ def convert(src: str | Path, target: str, *, out: str | Path | None = None,
     target = target.lower().lstrip(".")
     if not src.is_file():
         raise ConvertError(f"文件不存在：{src}")
-    if target not in P0_TARGETS:
-        raise ConvertError(f"P0 还不支持目标格式 {target}")
+    if target not in P0_TARGETS and target not in TEXT_TARGETS:
+        raise ConvertError(f"不支持目标格式 {target}")
 
     out_path = Path(out) if out else src.with_suffix("." + target)
     if out_path.suffix.lower().lstrip(".") != target:
         out_path = out_path.with_suffix("." + target)
+
+    # ── 文字书路径：txt / fb2 / docx / epub ──────────────────────────────
+    text_src = src.suffix.lower() in (".txt", ".fb2", ".docx")
+    if text_src and target not in TEXT_TARGETS:
+        raise ConvertError(
+            f"{src.suffix} 是文字书，只能转 {'/'.join(sorted(TEXT_TARGETS))}；"
+            f"转 {target} 需要排版引擎（P4）或本身不适用")
+
+    want_text = text_src or (src.suffix.lower() == ".epub" and target in ("txt", "fb2", "docx"))
+    # ⚠️ epub → epub 必须判断是漫画还是小说：
+    # 小说走文字路径（保留正文），漫画走图片路径。
+    # 早先没判断，小说 epub 被当漫画读（只取图片），126 章缩成 6 章，正文全丢。
+    if src.suffix.lower() == ".epub" and target == "epub" and not _epub_is_comic(src):
+        want_text = True
+
+    if want_text:
+        book = read_text_book(src)
+        out_path, note = write_text_book(book, target, out_path)
+        return {"ok": True, "out": str(out_path),
+                "pages": len(book.chapters), "mode": "text", "note": note}
 
     # zip ↔ cbz：容器相同，直接复制，连非图片条目一起保住（真·字节无损）
     if target in ("cbz", "zip") and src.suffix.lower() in (".cbz", ".zip"):

@@ -1,0 +1,443 @@
+"""7z 容器解析（纯标准库 lzma）。
+
+只为了 CB7 / CBC 漫画包能读进来，不做压缩写入。
+
+7z 的结构是「头在末尾」：
+
+    [签名头 32 字节]  →  指向 NextHeader 的偏移/大小/CRC
+    [压缩数据流]
+    [Next Header]     ← 文件名、大小、编码链都在这里
+
+Next Header 自己也可能被压缩（kEncodedHeader），要先解一层才看得到内容。
+
+支持：Copy / LZMA / LZMA2 / BCJ(ARM/PPC/SPARC/IA64) / Delta 单链与多链。
+不支持：BCJ2（四流交叉）、AES 加密 —— 明确报错。
+"""
+
+from __future__ import annotations
+
+import lzma
+from dataclasses import dataclass, field
+from pathlib import Path
+
+SIG = b"7z\xbc\xaf\x27\x1c"
+
+# kHeader 系列
+kEnd = 0x00
+kHeader = 0x01
+kArchiveProperties = 0x02
+kAdditionalStreamsInfo = 0x03
+kMainStreamsInfo = 0x04
+kFilesInfo = 0x05
+kPackInfo = 0x06
+kUnpackInfo = 0x07
+kSubStreamsInfo = 0x08
+kSize = 0x09
+kCRC = 0x0A
+kFolder = 0x0B
+kCodersUnpackSize = 0x0C
+kNumUnpackStream = 0x0D
+kEmptyStream = 0x0E
+kEmptyFile = 0x0F
+kName = 0x11
+kEncodedHeader = 0x17
+
+# codec id → lzma 过滤器
+_CODECS = {
+    0x00: None,                       # Copy
+    0x21: lzma.FILTER_LZMA2,
+    0x030101: lzma.FILTER_LZMA1,
+    0x03030103: lzma.FILTER_X86,
+    0x03030205: lzma.FILTER_POWERPC,
+    0x03030401: lzma.FILTER_IA64,
+    0x03030501: lzma.FILTER_ARM,
+    0x03030701: lzma.FILTER_ARMTHUMB,
+    0x03030805: lzma.FILTER_SPARC,
+    0x03: lzma.FILTER_DELTA,
+}
+_UNSUPPORTED = {0x0303011B: "BCJ2"}
+
+
+class SevenZError(ValueError):
+    pass
+
+
+class _Reader:
+    __slots__ = ("d", "p")
+
+    def __init__(self, data: bytes, pos: int = 0):
+        self.d = data
+        self.p = pos
+
+    def byte(self) -> int:
+        if self.p >= len(self.d):
+            raise SevenZError("7z 头意外结束")
+        v = self.d[self.p]
+        self.p += 1
+        return v
+
+    def take(self, n: int) -> bytes:
+        if self.p + n > len(self.d):
+            raise SevenZError("7z 数据被截断")
+        v = self.d[self.p:self.p + n]
+        self.p += n
+        return v
+
+    def number(self) -> int:
+        """7z 变长整数：首字节高位标记后续字节数"""
+        first = self.byte()
+        mask = 0x80
+        value = 0
+        for i in range(8):
+            if not (first & mask):
+                return value | ((first & (mask - 1)) << (8 * i))
+            value |= self.byte() << (8 * i)
+            mask >>= 1
+        return value
+
+    def u32(self) -> int:
+        return int.from_bytes(self.take(4), "little")
+
+    def u64(self) -> int:
+        return int.from_bytes(self.take(8), "little")
+
+    def bits(self, count: int) -> list[bool]:
+        out = []
+        cur = 0
+        mask = 0
+        for _ in range(count):
+            if mask == 0:
+                cur = self.byte()
+                mask = 0x80
+            out.append(bool(cur & mask))
+            mask >>= 1
+        return out
+
+
+@dataclass
+class _Folder:
+    coders: list[tuple[int, bytes, int, int]] = field(default_factory=list)  # (id, props, in, out)
+    pack_indices: list[int] = field(default_factory=list)
+    unpack_sizes: list[int] = field(default_factory=list)
+
+
+@dataclass
+class _StreamsInfo:
+    pack_pos: int = 0
+    pack_sizes: list[int] = field(default_factory=list)
+    folders: list[_Folder] = field(default_factory=list)
+    sub_counts: list[int] = field(default_factory=list)
+    sub_sizes: list[int] = field(default_factory=list)
+
+
+def _skip_digests(r: _Reader, count: int) -> None:
+    """7z 的 CRC 列表：先 1 字节 AllAreDefined，再按需读 4 字节 CRC。
+
+    ⚠️ 那个 AllAreDefined 字节必须读 —— 漏了它后面全错位
+    （症状：解析主 header 时报「未知类型 112」这种鬼数字）。
+    """
+    if count <= 0:
+        return
+    all_defined = r.byte()
+    if all_defined:
+        r.take(4 * count)
+        return
+    flags = r.bits(count)
+    for defined in flags:
+        if defined:
+            r.u32()
+
+
+def _read_pack_info(r: _Reader, si: _StreamsInfo) -> None:
+    si.pack_pos = r.number()
+    n = r.number()
+    while True:
+        t = r.number()
+        if t == kEnd:
+            break
+        # ⚠️ 不能在这里先读一个 size：kSize/kCRC 后面跟的是列表，不是长度前缀。
+        # 早先统一 `size = r.number()` 再分支，kSize 分支又读 n 个数字，
+        # 等于多吃一个字节 → 后面整个头错位。
+        if t == kSize:
+            si.pack_sizes = [r.number() for _ in range(n)]
+        elif t == kCRC:
+            _skip_digests(r, n)
+        else:
+            r.take(r.number())
+
+
+def _read_folder(r: _Reader) -> _Folder:
+    folder = _Folder()
+    ncoders = r.number()
+    total_in = total_out = 0
+    for _ in range(ncoders):
+        flags = r.byte()
+        id_size = flags & 0x0F
+        is_complex = bool(flags & 0x10)
+        has_attrs = bool(flags & 0x20)
+        cid = 0
+        for b in r.take(id_size):
+            cid = (cid << 8) | b
+        nin = nout = 1
+        if is_complex:
+            nin = r.number()
+            nout = r.number()
+        props = b""
+        if has_attrs:
+            props = r.take(r.number())
+        total_in += nin
+        total_out += nout
+        folder.coders.append((cid, props, nin, nout))
+
+    bind_pairs = total_out - 1
+    bound_ins: set[int] = set()
+    for _ in range(bind_pairs):
+        in_i = r.number()
+        r.number()                      # out index
+        bound_ins.add(in_i)
+
+    npacked = total_in - bind_pairs
+    if npacked == 1:
+        # 只有一个包流时它不显式存储：取第一个没被 bind 的输入
+        free = [i for i in range(total_in) if i not in bound_ins]
+        folder.pack_indices = free[:1] or [0]
+    else:
+        folder.pack_indices = [r.number() for _ in range(npacked)]
+    return folder
+
+
+def _read_unpack_info(r: _Reader, si: _StreamsInfo) -> None:
+    # ⚠️ UnpackInfo 后面**直接**跟 kFolder，没有 count 字段。
+    # 照着 PackInfo 的样子在这里读一个 number() 会把 kFolder 标记吃掉，
+    # 之后全错位（症状：7z 数据被截断）。
+    while True:
+        t = r.number()
+        if t == kEnd:
+            break
+        if t == kFolder:
+            nfolders = r.number()
+            external = r.byte()
+            if external:
+                raise SevenZError("7z 外部文件夹定义不支持")
+            si.folders = [_read_folder(r) for _ in range(nfolders)]
+            t3 = r.number()
+            if t3 != kCodersUnpackSize:
+                raise SevenZError("7z 缺少 CodersUnpackSize")
+            for f in si.folders:
+                f.unpack_sizes = [r.number() for _ in f.coders]
+        else:
+            size = r.number()
+            r.take(size)
+
+
+def _read_substreams(r: _Reader, si: _StreamsInfo) -> None:
+    nfolders = len(si.folders)
+    si.sub_counts = [1] * nfolders
+    while True:
+        t = r.number()
+        if t == kEnd:
+            break
+        if t == kNumUnpackStream:
+            si.sub_counts = [r.number() for _ in range(nfolders)]
+        elif t == kSize:
+            total = sum(si.sub_counts)
+            sizes = []
+            for i, cnt in enumerate(si.sub_counts):
+                for _ in range(cnt - 1):
+                    sizes.append(r.number())
+                # 每个 folder 最后一个 substream 的大小由 unpack size 推出
+                last = si.folders[i].unpack_sizes[-1] - sum(sizes[-cnt + 1:] if cnt > 1 else [])
+                sizes.append(last)
+            si.sub_sizes = sizes[:total]
+        elif t == kCRC:
+            # 每个 substream 一个 CRC；但「只有一个 stream 的 folder」用它自己的
+            # folder CRC，不再单独列 → 数量要减掉这些 folder
+            total = sum(si.sub_counts)
+            num_digests = total - sum(1 for c in si.sub_counts if c == 1)
+            _skip_digests(r, num_digests)
+        else:
+            r.take(r.number())
+
+
+def _read_streams_info(r: _Reader) -> _StreamsInfo:
+    si = _StreamsInfo()
+    while True:
+        t = r.number()
+        if t == kEnd:
+            break
+        if t == kPackInfo:
+            _read_pack_info(r, si)
+        elif t == kUnpackInfo:
+            _read_unpack_info(r, si)
+        elif t == kSubStreamsInfo:
+            _read_substreams(r, si)
+        else:
+            raise SevenZError(f"7z StreamsInfo 里未知的类型 {t}")
+    if not si.sub_counts or len(si.sub_counts) != len(si.folders):
+        si.sub_counts = [1] * len(si.folders)
+    if not si.sub_sizes:
+        si.sub_sizes = [f.unpack_sizes[-1] for f in si.folders]
+    return si
+
+
+def _read_files_info(r: _Reader) -> tuple[list[str], list[bool]]:
+    n = r.number()
+    names: list[str] = []
+    empty: list[bool] = [False] * n
+    while True:
+        ptype = r.number()
+        if ptype == kEnd:
+            break
+        size = r.number()
+        start = r.p
+        if ptype == kEmptyStream:
+            empty = r.bits(n)
+        elif ptype == kName:
+            external = r.byte()
+            if not external:
+                raw = r.take(size - 1)
+                # ⚠️ 不能 raw.split(b"\x00\x00")：UTF-16LE 里 ASCII 字符是
+                # 「字符 + 00」，两个字符之间就可能凑出 00 00，切出来的名字会串行。
+                # 必须按 2 字节步进，遇到 \x00\x00 才算结束符。
+                names = []
+                buf = bytearray()
+                for i in range(0, len(raw) - 1, 2):
+                    pair = raw[i:i + 2]
+                    if pair == b"\x00\x00":
+                        names.append(buf.decode("utf-16-le", "replace"))
+                        buf = bytearray()
+                    else:
+                        buf += pair
+                if buf:
+                    names.append(buf.decode("utf-16-le", "replace"))
+        r.p = start + size          # 跳过不关心的属性
+    return names, empty
+
+
+def _decode_folder(data: bytes, folder: _Folder, pack_sizes: list[int],
+                   pack_offsets: list[int]) -> bytes:
+    if len(folder.pack_indices) != 1:
+        raise SevenZError("7z 多包流（BCJ2 等）暂不支持")
+    idx = folder.pack_indices[0]
+    raw = data[pack_offsets[idx]:pack_offsets[idx] + pack_sizes[idx]]
+
+    if len(folder.coders) == 1 and folder.coders[0][0] == 0x00:
+        return raw                                  # Copy
+
+    filters = []
+    for cid, props, _nin, _nout in reversed(folder.coders):   # 编码顺序的反向是解码顺序
+        if cid in _UNSUPPORTED:
+            raise SevenZError(f"7z 编码 {_UNSUPPORTED[cid]} 暂不支持")
+        filt = _CODECS.get(cid)
+        if filt is None:
+            raise SevenZError(f"7z 未知编码 id 0x{cid:x}")
+        entry = {"id": filt}
+        if cid in (0x21, 0x030101) and len(props) >= 5:
+            # LZMA 属性：1 字节 lc/lp/pb + 4 字节 dict size
+            lc_lp_pb = props[0]
+            dic = int.from_bytes(props[1:5], "little")
+            entry["lc"] = lc_lp_pb % 9
+            entry["lp"] = (lc_lp_pb // 9) % 5
+            entry["pb"] = lc_lp_pb // 45
+            if dic:
+                entry["dict_size"] = dic
+        filters.append(entry)
+
+    try:
+        return lzma.decompress(raw, format=lzma.FORMAT_RAW, filters=filters)
+    except lzma.LZMAError as e:
+        raise SevenZError(f"7z 解压失败：{e}")
+
+
+def _pack_offsets(si: _StreamsInfo) -> list[int]:
+    """打包流在文件里的绝对起点。
+
+    ⚠️ PackPos 是**相对签名头之后**（偏移 32）的位置，不是相对文件开头。
+    直接拿 32 当起点会读错几十字节，解压报 `Corrupt input data`。
+    """
+    start = 32 + si.pack_pos
+    offsets = [start]
+    for s in si.pack_sizes[:-1]:
+        offsets.append(offsets[-1] + s)
+    return offsets
+
+
+def read_all(path: str | Path) -> dict[str, bytes]:
+    """把 7z 里所有文件解出来 → {名字: 内容}。"""
+    path = Path(path)
+    data = path.read_bytes()
+    if not data.startswith(SIG):
+        raise SevenZError("不是 7z 文件（签名不对）")
+
+    r = _Reader(data, 6)
+    r.take(2)                       # version
+    r.u32()                         # start header crc
+    next_off = r.u64()
+    next_size = r.u64()
+    r.u32()                         # next header crc
+
+    pos = 32 + next_off
+    header = data[pos:pos + next_size]
+    if not header:
+        raise SevenZError("7z 头为空")
+
+    hr = _Reader(header)
+    kind = hr.number()
+    if kind == kEncodedHeader:
+        # 头本身被压缩了一层
+        enc_si = _read_streams_info(hr)
+        if not enc_si.folders:
+            raise SevenZError("7z 编码头里没有文件夹")
+        header = _decode_folder(data, enc_si.folders[0], enc_si.pack_sizes,
+                                _pack_offsets(enc_si))
+        hr = _Reader(header)
+        kind = hr.number()
+    if kind != kHeader:
+        raise SevenZError(f"7z 头类型异常：{kind}")
+
+    streams: _StreamsInfo | None = None
+    names: list[str] = []
+    empty: list[bool] = []
+    while True:
+        t = hr.number()
+        if t == kEnd:
+            break
+        if t == kMainStreamsInfo:
+            streams = _read_streams_info(hr)
+        elif t == kFilesInfo:
+            names, empty = _read_files_info(hr)
+        else:
+            raise SevenZError(f"7z 头里未知的类型 {t}")
+
+    if streams is None or not names:
+        raise SevenZError("7z 里没有文件")
+
+    pack_offsets = _pack_offsets(streams)
+
+    blobs: list[bytes] = []
+    for folder in streams.folders:
+        blobs.append(_decode_folder(data, folder, streams.pack_sizes, pack_offsets))
+
+    # 按 substream 切分并分配给非空文件
+    out: dict[str, bytes] = {}
+    flat: list[bytes] = []
+    for blob, cnt in zip(blobs, streams.sub_counts):
+        if cnt <= 1:
+            flat.append(blob)
+        else:
+            sizes = streams.sub_sizes[:cnt]
+            streams.sub_sizes = streams.sub_sizes[cnt:]
+            pos2 = 0
+            for s in sizes:
+                flat.append(blob[pos2:pos2 + s])
+                pos2 += s
+
+    it = iter(flat)
+    for name, is_empty in zip(names, empty):
+        if is_empty:
+            continue
+        try:
+            out[name] = next(it)
+        except StopIteration:
+            break
+    return out
