@@ -68,7 +68,12 @@ def encode_g4_rows(rows: list[list[int]], columns: int) -> bytes:
     bw = _BitWriter()
     for changes in rows:
         if not changes:
-            bw.write("1")                    # V0：与参考行一致（全白）
+            # 全白行：必须显式写 H + 白 run(整行) + 黑 run(0)。
+            # ⚠️ 不能图省事写 V0（1 个 bit）—— V0 的语义是「与参考行一致」，
+            # 上一行全黑时按 V0 解就会解成整行黑（实测「上黑下白」的图整页变黑）。
+            bw.write("001")
+            bw.write(_run_code(0, columns))
+            bw.write(_run_code(1, 0))
             continue
         # 拆成 (颜色, 长度) 序列
         runs: list[tuple[int, int]] = []

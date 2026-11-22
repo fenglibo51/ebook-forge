@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 from pathlib import Path
 
@@ -27,9 +28,31 @@ from .reader import PDFDocument
 MIN_SIDE = 200          # 小于这个边长的是碎片
 MIN_COVER = 0.90        # 整页图覆盖率下限
 
+# 渲染兜底（有损）：只有「没有无损通路」的 PDF 才走这条路
+RENDER_DPI = int(os.environ.get("BOOKFORGE_RENDER_DPI", "200"))
+if RENDER_DPI not in (150, 200, 300):
+    RENDER_DPI = 200
+RENDER_FALLBACK = os.environ.get("BOOKFORGE_RENDER_FALLBACK", "true").strip().lower() \
+    not in ("0", "false", "no", "off")
+
 
 class PDFComicError(ValueError):
     pass
+
+
+def _render_pages(doc: PDFDocument, out_pages: int, dpi: int) -> list[Page]:
+    """逐页渲染成 PNG。有损，但这是蒙版/损坏 PDF 唯一的出图办法。"""
+    from .render import render_page_to_png
+
+    scale = dpi / 72.0
+    pages: list[Page] = []
+    for i in range(out_pages):
+        data = render_page_to_png(doc, i, scale=scale)
+        from ..formats import png as pngmod
+        w, h, _ = pngmod.image_size(data)
+        pages.append(Page(data=data, fmt="png", width=w, height=h,
+                          name=f"{i + 1:05d}"))
+    return pages
 
 
 def pdf_to_comic(path: str | Path, *, min_side: int = MIN_SIDE,
@@ -54,14 +77,29 @@ def pdf_to_comic(path: str | Path, *, min_side: int = MIN_SIDE,
             "本功能只支持图片型漫画 PDF —— 小说类请转 EPUB / TXT 等格式")
 
     if mask_heavy:
-        raise PDFComicError(
-            f"这个 PDF 的页面由图像蒙版构成（{len(stencil)}/{len(all_imgs)} 条），"
-            "没有无损提取通路。需要渲染模式（P6，尚未实现）")
+        if not RENDER_FALLBACK:
+            raise PDFComicError(
+                f"这个 PDF 的页面由图像蒙版构成（{len(stencil)}/{len(all_imgs)} 条），"
+                "没有无损提取通路；渲染兜底已关闭（BOOKFORGE_RENDER_FALLBACK=false）")
+        pages = _render_pages(doc, pages_n, RENDER_DPI)
+        return ComicBook(pages=pages, metadata={"title": Path(path).stem},
+                         source_format="pdf",
+                         mode="render",
+                         note=(f"已用渲染模式转换（{RENDER_DPI}dpi，有损）："
+                               f"页面是图像蒙版结构（{len(stencil)}/{len(all_imgs)} 条），"
+                               "没有无损通路"))
 
     if cover < min_cover:
-        raise PDFComicError(
-            f"只有 {len(covered_pages)}/{pages_n} 页能提取到整页图"
-            f"（{cover:.0%}，低于 {min_cover:.0%}），需要渲染模式（P6，尚未实现）")
+        if not RENDER_FALLBACK:
+            raise PDFComicError(
+                f"只有 {len(covered_pages)}/{pages_n} 页能提取到整页图"
+                f"（{cover:.0%}），渲染兜底已关闭")
+        pages = _render_pages(doc, pages_n, RENDER_DPI)
+        return ComicBook(pages=pages, metadata={"title": Path(path).stem},
+                         source_format="pdf",
+                         mode="render",
+                         note=(f"已用渲染模式转换（{RENDER_DPI}dpi，有损）："
+                               f"只提取到 {len(covered_pages)}/{pages_n} 页整页图"))
 
     # 每页取面积最大的一张当整页图（一页里附带的小图是装饰/水印）
     best: dict[int, object] = {}

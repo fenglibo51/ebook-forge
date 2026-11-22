@@ -113,12 +113,23 @@ PDF 作为源时：
 
 ```
 蒙版型 PDF            页面是 /ImageMask 结构（典型：iTextSharp 脚本生成）
-                      抽出来是反相的黑白图，不是页面 → 明确报错
-                      真要转只能渲染（P6，尚未实现）
-覆盖率不足            有页提不出整页图 → 报错，不静默少页
+                      抽出来是反相的黑白图，不是页面
+                      → 走渲染兜底（有损），mode=render，note 写明原因
+覆盖率不足            有页提不出整页图 → 同样走渲染兜底
 Indexed 调色板 PDF    暂不支持（P2 补）
 JBIG2 编码的 PDF      暂不支持（P2 补）
 加密 PDF              明确报错
+```
+
+渲染兜底（P6）的边界：
+
+```
+支持   q/Q、cm、Do（图片和 Form）、re/m/l/c/h + f/S、rg/g/k、w、ImageMask
+不做   文字（BT/Tf/Tj 全部跳过）—— 没有字形轮廓光栅化
+      渐变、透明度、混合模式、图案、内联图像、JPEG/JP2 图片
+代价   约 5 秒/页（纯 Python）。162 页的书约 15 分钟，poppler 是 8 分钟
+开关   BOOKFORGE_RENDER_DPI（默认 200，可选 150/300）
+      BOOKFORGE_RENDER_FALLBACK=false 时彻底禁用 → 这类 PDF 直接报错
 ```
 
 防炸：单页解压超 256MB、整包解压超 4GB 直接拒（`BOOKFORGE_MAX_PAGE_MB` /

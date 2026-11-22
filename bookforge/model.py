@@ -59,6 +59,9 @@ class ComicBook:
     pages: list[Page] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
     source_format: str = ""
+    # 读取阶段可能改变处理方式（如 PDF 走渲染兜底 = 有损），要把结论带出去
+    mode: str = ""          # "" / "extract"（无损）/ "render"（有损）
+    note: str = ""          # 给人看的说明
 
     @property
     def page_count(self) -> int:

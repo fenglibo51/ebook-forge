@@ -105,7 +105,12 @@ class TestPDFRoundTrip(unittest.TestCase):
             self.assertEqual(png.idat_bytes(book.pages[0].data), img.stream)
 
     def test_small_fragments_filtered(self):
-        """小于 200px 的碎片不算整页图；因此缺页时整体报错，不静默少页"""
+        """小于 200px 的碎片不算整页图。
+
+        P6 之后行为分两种：
+          兜底开启（默认）→ 走渲染，mode=render，不报错
+          兜底关闭        → 明确报错，不静默少页
+        """
         with tempfile.TemporaryDirectory() as d:
             src = Path(d) / "a.cbz"
             build_cbz(src, [make_png(300, 400, seed=1), make_png(40, 40, seed=2)])
@@ -114,14 +119,27 @@ class TestPDFRoundTrip(unittest.TestCase):
             doc = PDFDocument(pdf)
             self.assertEqual(len(doc.all_images()), 2)      # 两张图都在 PDF 里
 
-            # 40x40 那页被当碎片丢掉 → 覆盖率 50% → 必须报错（不许静默少一页）
-            with self.assertRaises(PDFComicError) as ctx:
-                pdf_to_comic(pdf)
-            self.assertIn("1/2", str(ctx.exception))
+            import bookforge.pdf.to_comic as tc
+            old = tc.RENDER_FALLBACK
+            try:
+                # 兜底开启 → 渲染，页数完整
+                tc.RENDER_FALLBACK = True
+                book = pdf_to_comic(pdf)
+                self.assertEqual(book.page_count, 2)
+                self.assertEqual(book.mode, "render")
 
-            # 放宽阈值就能提取两页（证明拒绝的原因确实是碎片过滤，不是解析失败）
+                # 兜底关闭 → 报错
+                tc.RENDER_FALLBACK = False
+                with self.assertRaises(PDFComicError) as ctx:
+                    pdf_to_comic(pdf)
+                self.assertIn("1/2", str(ctx.exception))
+            finally:
+                tc.RENDER_FALLBACK = old
+
+            # 放宽碎片阈值 → 无损提取，不走渲染
             book = pdf_to_comic(pdf, min_side=10)
             self.assertEqual(book.page_count, 2)
+            self.assertEqual(book.mode, "")
 
 
 class TestReject(unittest.TestCase):

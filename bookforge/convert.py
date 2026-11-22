@@ -216,4 +216,4 @@ def convert(src: str | Path, target: str, *, out: str | Path | None = None,
             note = f"页面按 {dpi:g}dpi 换算，图片原字节直嵌"
 
     return {"ok": True, "out": str(out_path), "pages": book.page_count,
-            "mode": mode, "note": note}
+            "mode": book.mode or mode, "note": book.note or note}
