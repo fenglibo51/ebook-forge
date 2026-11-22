@@ -34,6 +34,9 @@ def read_comic(path: str | Path) -> ComicBook:
         return cbz.read(path)
     if ext == ".epub":
         return epub.read(path)
+    if ext == ".pdf":
+        from .pdf.to_comic import pdf_to_comic
+        return pdf_to_comic(path)
     if ext in (".cbr", ".cb7", ".cbc"):
         raise ConvertError(f"{ext} 还没实现（P2 接 7z / RAR）")
     raise ConvertError(f"不支持的源格式 {ext}")

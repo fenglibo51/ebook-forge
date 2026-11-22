@@ -8,12 +8,18 @@
 ## 现在能做什么
 
 ```
-CBZ / ZIP  →  CBZ / ZIP / EPUB / PDF
-EPUB(漫画) →  CBZ / EPUB / PDF
+CBZ / ZIP        →  CBZ / ZIP / EPUB / PDF
+EPUB(漫画)       →  CBZ / EPUB / PDF
+PDF(图片型漫画)  →  CBZ / EPUB / PDF
 ```
 
 图片一律**原字节直嵌**：JPEG 走 DCTDecode、JPEG2000 走 JPXDecode、PNG 走 FlateDecode
 + Predictor 15，不解码、不重采样、不二次压缩。
+
+PDF 输出也一样：PDF 里的 Flate 流可以直接当 PNG 的 IDAT（两边行滤波规范相同），
+所以 PDF → CBZ 也是零解码零重压。
+
+**不依赖任何外部二进制** —— 没有 poppler、没有 Calibre、没有 unar。
 
 ## 怎么用
 
@@ -60,29 +66,42 @@ PNG 直通走像素级比对。
 python3 -m unittest discover -s tests
 ```
 
-## 已知限制（P0）
+## 已知限制
 
 ```
 CBR / CB7 / CBC      还没接（P2 做 7z 解析；RAR 闭源，永久不支持）
-MOBI / AZW3 / TXT    还没做（P1~P3）
+MOBI / AZW3 / TXT    还没做（P2~P4）
 带透明通道的 PNG      能进 PDF，但会拆成 SMask，字节不再一致（像素无损）
                       解码走纯 Python，约 1.5 秒/页（JPEG 走直通，0.01 秒/页）
 TIFF / WEBP / GIF    明确报错，不静默转码
 GBK 文件名的 zip      条目名会显示成乱码（不影响转换，因为写入时重编号）
 ```
 
+PDF 作为源时：
+
+```
+蒙版型 PDF            页面是 /ImageMask 结构（典型：iTextSharp 脚本生成）
+                      抽出来是反相的黑白图，不是页面 → 明确报错
+                      真要转只能渲染（P6，尚未实现）
+覆盖率不足            有页提不出整页图 → 报错，不静默少页
+Indexed 调色板 PDF    暂不支持（P2 补）
+JBIG2 编码的 PDF      暂不支持（P2 补）
+加密 PDF              明确报错
+```
+
 防炸：单页解压超 256MB、整包解压超 4GB 直接拒（`BOOKFORGE_MAX_PAGE_MB` /
 `BOOKFORGE_MAX_TOTAL_MB` 可调）。用压缩包里声明的大小预判，不解压就能拦住。
 `zip → cbz` 是容器等价复制，不解压，百 GB 的包也照过。
 
-⚠️ 所有页一次性读进内存（25 页 / 29MB 实测峰值 152MB）。500 页以上的大包会撞上限，
-流式处理排在 P1。
+⚠️ CBZ / EPUB 作为源时所有页一次性读进内存（25 页 / 29MB 实测峰值 152MB）。
+500 页以上的大包会撞上限，流式处理排在 P2。
+PDF 作为源不受此限 —— 解析是流式的，203 页 / 76MB 实测 0.8 秒、内存 80MB。
 
 ## 路线图
 
 ```
 P0  漫画链无损        IR + cbz/epub + png + pdf/writer         已完成
-P1  PDF → CBZ         pdf/reader + images + ccitt，摆脱 poppler
+P1  PDF → CBZ         pdf/reader + images + ccitt              已完成
 P2  容器扩展          sevenz + fb2 + txt + docx
 P3  Kindle            mobi 读 + 写
 P4  文字书 → PDF      book/model + css + layout(L1) + fonts

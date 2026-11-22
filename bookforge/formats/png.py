@@ -207,8 +207,70 @@ def decode(data: bytes) -> tuple[bytes, PNGInfo, int]:
     return px, info, ch
 
 
-def encode(pixels: bytes, width: int, height: int, channels: int = 3) -> bytes:
-    """原始像素 → PNG（filter 0，zlib 默认压缩）。"""
+def wrap_idat(idat: bytes, width: int, height: int,
+              color_type: int, bit_depth: int) -> bytes:
+    """直接用一段现成的 zlib 流当 PNG 的 IDAT 拼出完整文件。
+
+    这是「PDF FlateDecode + Predictor 15 → PNG」的零拷贝路径：
+    两边的行滤波规范完全一样（每行前面一个 0~4 的 filter byte），
+    所以不需要解压、不需要反滤波、不需要重新压缩。
+
+    前提（调用方必须先校验）：idat 是 zlib 流，且每行 filter byte 都在 0~4。
+    """
+
+    def chunk(t: bytes, b: bytes) -> bytes:
+        return (struct.pack(">I", len(b)) + t + b
+                + struct.pack(">I", zlib.crc32(t + b) & 0xFFFFFFFF))
+
+    ihdr = struct.pack(">IIBBBBB", width, height, bit_depth, color_type, 0, 0, 0)
+    return (PNG_SIG + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat)
+            + chunk(b"IEND", b""))
+
+
+def idat_filters_ok(raw: bytes, rowbytes: int, height: int) -> bool:
+    """校验解压后的数据每行开头都是合法 filter（0~4）—— 决定能不能直接当 IDAT 用。"""
+    step = rowbytes + 1
+    if len(raw) < step * height:
+        return False
+    for y in range(height):
+        if raw[y * step] > 4:
+            return False
+    return True
+
+
+def unfilter(raw: bytes, width: int, height: int, bpp: int) -> bytes:
+    """公开入口：PDF 预测器和 PNG 行滤波共用的反滤波实现。"""
+    return _unfilter(raw, width, height, bpp)
+
+
+def encode(pixels: bytes, width: int, height: int, channels: int = 3,
+           bit_depth: int = 8) -> bytes:
+    """原始像素 → PNG（filter 0，zlib 默认压缩）。
+
+    bit_depth=8：pixels 是 8bit 像素（channels 1/2/3/4）
+    bit_depth=1：pixels 是每行字节对齐的 1bit 位图（channels 只能是 1），
+                 调用方负责给出 ((width+7)//8)*height 长度
+    """
+    if bit_depth == 1:
+        if channels != 1:
+            raise PNGError("1bit PNG 只支持单通道")
+        rowbytes = (width + 7) // 8
+        if len(pixels) < rowbytes * height:
+            raise PNGError("1bit 像素数据长度不足")
+        raw = bytearray()
+        for y in range(height):
+            raw.append(0)
+            raw += pixels[y * rowbytes:(y + 1) * rowbytes]
+
+        def ck1(t: bytes, b: bytes) -> bytes:
+            return (struct.pack(">I", len(b)) + t + b
+                    + struct.pack(">I", zlib.crc32(t + b) & 0xFFFFFFFF))
+
+        ihdr = struct.pack(">IIBBBBB", width, height, 1, 0, 0, 0, 0)
+        return (PNG_SIG + ck1(b"IHDR", ihdr)
+                + ck1(b"IDAT", zlib.compress(bytes(raw), 9))
+                + ck1(b"IEND", b""))
+
     color_type = {1: 0, 2: 4, 3: 2, 4: 6}[channels]
     stride = width * channels
     if len(pixels) != stride * height:
