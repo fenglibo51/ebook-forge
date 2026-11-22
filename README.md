@@ -13,10 +13,12 @@
   CB7 / CBC（7z）        →  CBZ / EPUB / PDF
   EPUB(漫画)             →  CBZ / EPUB / PDF
   PDF(图片型漫画)        →  CBZ / EPUB / PDF
+  MOBI(漫画)             →  CBZ / EPUB / PDF
 
 文字链
-  TXT / FB2 / DOCX       →  TXT / FB2 / DOCX / EPUB
-  EPUB(小说)             →  TXT / FB2 / DOCX / EPUB
+  TXT / FB2 / DOCX       →  TXT / FB2 / DOCX / EPUB / MOBI
+  EPUB(小说)             →  TXT / FB2 / DOCX / EPUB / MOBI
+  MOBI(小说)             →  TXT / FB2 / DOCX / EPUB
 ```
 
 图片一律**原字节直嵌**：JPEG 走 DCTDecode、JPEG2000 走 JPXDecode、PNG 走 FlateDecode
@@ -25,7 +27,7 @@
 PDF 输出也一样：PDF 里的 Flate 流可以直接当 PNG 的 IDAT（两边行滤波规范相同），
 所以 PDF → CBZ 也是零解码零重压。
 
-**不依赖任何外部二进制** —— 没有 poppler、没有 Calibre、没有 unar、没有 p7zip。
+**不依赖任何外部二进制** —— 没有 poppler、没有 Calibre、没有 unar、没有 p7zip、没有 kindlegen。
 
 ## 怎么用
 
@@ -76,9 +78,11 @@ python3 -m unittest discover -s tests
 
 ```
 CBR（RAR）            永久不支持：RAR5 算法闭源，纯 Python 无实现
-MOBI / AZW3           还没做（P3）
+AZW3（KF8）           不支持：碎片化 HTML + FDST/INDX 表还没做，明确报错
+MOBI + DRM            明确报错（有 DRM 的 mobi 无法解）
+MOBI + HUFF/CDIC      明确报错（只做 PalmDOC 压缩；实测库里 42 个 mobi 全是 PalmDOC）
+MOBI 输出             不压缩（compression=1），体积比原版大，但结构最稳
 带透明通道的 PNG      能进 PDF，但会拆成 SMask，字节不再一致（像素无损）
-                      解码走纯 Python，约 1.5 秒/页（JPEG 走直通，0.01 秒/页）
 TIFF / WEBP / GIF     明确报错，不静默转码
 GBK 文件名的 zip      条目名会显示成乱码（不影响转换，因为写入时重编号）
 文字 → PDF            需要排版引擎（P4），现在明确报错
