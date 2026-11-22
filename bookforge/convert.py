@@ -21,9 +21,9 @@ COMIC_INPUTS = {".cbz", ".zip", ".cbr", ".cb7", ".cbc"}
 # 漫画源（→ cbz / zip / epub / pdf）
 P0_INPUTS = {".cbz", ".zip", ".epub", ".pdf"}
 P0_TARGETS = {"cbz", "zip", "epub", "pdf"}
-# 文字书（→ txt / fb2 / docx / epub / mobi）
+# 文字书（→ txt / fb2 / docx / epub / mobi / pdf）
 TEXT_INPUTS = {".txt", ".fb2", ".docx", ".epub", ".mobi"}
-TEXT_TARGETS = {"txt", "fb2", "docx", "epub", "mobi"}
+TEXT_TARGETS = {"txt", "fb2", "docx", "epub", "mobi", "pdf"}
 
 
 def _epub_is_comic(path: Path) -> bool:
@@ -65,7 +65,9 @@ def read_text_book(path: str | Path):
     raise ConvertError(f"文字路径不支持源格式 {ext}")
 
 
-def write_text_book(book, target: str, out: Path) -> tuple[Path, str]:
+def write_text_book(book, target: str, out: Path, *,
+                    font: str = "", page_size: str = "a5",
+                    style: dict | None = None) -> tuple[Path, str]:
     """TextBook → 目标容器。返回 (输出路径, 提示)。"""
     from .formats import docx as docx_mod, fb2, mobi as mobi_mod, txt_io
 
@@ -84,6 +86,15 @@ def write_text_book(book, target: str, out: Path) -> tuple[Path, str]:
     if target == "mobi":
         out.write_bytes(mobi_mod.to_bytes(book))
         return out, ""
+    if target == "pdf":
+        from .model import PageSpec
+        from .pdf.textpdf import TextPDFWriter, find_font
+        spec = PageSpec.a5() if page_size.lower() != "a4" else PageSpec.from_mm(210, 297)
+        writer = TextPDFWriter(find_font(font))
+        data = writer.build(book, spec=spec, style=style,
+                            title=(book.metadata or {}).get("title", ""))
+        out.write_bytes(data)
+        return out, "排版 L1：单栏分页 / 章节另起页 / 页码 / 首行缩进 2 字符"
     if target == "epub":
         epub.write_text(book, out,
                         title=(book.metadata or {}).get("title", ""),
@@ -118,7 +129,7 @@ def read_comic(path: str | Path) -> ComicBook:
 
 def convert(src: str | Path, target: str, *, out: str | Path | None = None,
             dpi: float = 300.0, fit: str = "native",
-            page_size: str = "a5") -> dict:
+            page_size: str = "a5", font: str = "") -> dict:
     """转换单个漫画文件。
 
     target: cbz / zip / epub / pdf
@@ -143,17 +154,15 @@ def convert(src: str | Path, target: str, *, out: str | Path | None = None,
             f"{src.suffix} 是文字书，只能转 {'/'.join(sorted(TEXT_TARGETS))}；"
             f"转 {target} 需要排版引擎（P4）或本身不适用")
 
-    want_text = (text_src
-                 or (src.suffix.lower() in (".epub", ".mobi")
-                     and target in ("txt", "fb2", "docx")))
-    # ⚠️ epub → epub 必须判断是漫画还是小说：
-    # 小说走文字路径（保留正文），漫画走图片路径。
-    # 早先没判断，小说 epub 被当漫画读（只取图片），126 章缩成 6 章，正文全丢。
-    if src.suffix.lower() == ".epub" and target == "epub" and not _epub_is_comic(src):
-        want_text = True
-    # mobi 同理：漫画 mobi（图片页）走图片路径，小说 mobi 走文字路径
-    if src.suffix.lower() == ".mobi" and target == "epub":
-        want_text = not _mobi_is_comic(src)
+    want_text = text_src
+    # epub / mobi 作为源时要分辨漫画还是小说：
+    #   目标是文字类（txt/fb2/docx/pdf/epub）且源不是漫画 → 走文字路径
+    #   漫画 epub/mobi → cbz/pdf 等 → 走图片路径
+    # 早先只判断了 epub→epub，导致小说 epub → pdf 被当漫画处理（正文全丢）。
+    if src.suffix.lower() in (".epub", ".mobi") and target in ("txt", "fb2", "docx", "pdf", "epub"):
+        is_comic = (_epub_is_comic(src) if src.suffix.lower() == ".epub"
+                    else _mobi_is_comic(src))
+        want_text = not is_comic
 
     if want_text:
         book = read_text_book(src)
@@ -161,7 +170,8 @@ def convert(src: str | Path, target: str, *, out: str | Path | None = None,
         if not (book.metadata or {}).get("title"):
             book.metadata = dict(book.metadata or {})
             book.metadata["title"] = src.stem
-        out_path, note = write_text_book(book, target, out_path)
+        out_path, note = write_text_book(book, target, out_path,
+                                         font=font, page_size=page_size)
         return {"ok": True, "out": str(out_path),
                 "pages": len(book.chapters), "mode": "text", "note": note}
 

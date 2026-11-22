@@ -17,7 +17,7 @@ from . import ConvertError, __version__, convert
 def cmd_convert(args) -> int:
     try:
         r = convert(args.src, args.target, out=args.out, dpi=args.dpi,
-                    fit=args.fit, page_size=args.page_size)
+                    fit=args.fit, page_size=args.page_size, font=args.font)
     except (ConvertError, ValueError) as e:
         print(f"❌ {e}", file=sys.stderr)
         return 1
@@ -59,6 +59,8 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--fit", choices=["native", "page"], default="native",
                    help="native=页面跟图片走；page=等比缩进 page-size")
     c.add_argument("--page-size", choices=["a5", "a4"], default="a5")
+    c.add_argument("--font", default="",
+                   help="嵌 PDF 用的 TrueType 字体，默认自动找 NotoSansSC")
     c.add_argument("--json", action="store_true")
     c.set_defaults(func=cmd_convert)
 

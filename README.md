@@ -16,9 +16,16 @@
   MOBI(漫画)             →  CBZ / EPUB / PDF
 
 文字链
-  TXT / FB2 / DOCX       →  TXT / FB2 / DOCX / EPUB / MOBI
-  EPUB(小说)             →  TXT / FB2 / DOCX / EPUB / MOBI
-  MOBI(小说)             →  TXT / FB2 / DOCX / EPUB
+  TXT / FB2 / DOCX / EPUB(小说) / MOBI(小说)
+      →  TXT / FB2 / DOCX / EPUB / MOBI / PDF
+```
+
+PDF 输出分两条路，互不干扰：
+
+```
+漫画 → PDF    图片原字节直嵌（DCTDecode / JPXDecode / FlateDecode + Predictor 15）
+文字 → PDF    书排版引擎（L1：单栏分页 / 章节另起页 / 页码 / 首行缩进 2 字符）
+              + TrueType 子集化嵌入（10MB 字体按书用到的字裁成几十 KB）
 ```
 
 图片一律**原字节直嵌**：JPEG 走 DCTDecode、JPEG2000 走 JPXDecode、PNG 走 FlateDecode
@@ -85,8 +92,17 @@ MOBI 输出             不压缩（compression=1），体积比原版大，但�
 带透明通道的 PNG      能进 PDF，但会拆成 SMask，字节不再一致（像素无损）
 TIFF / WEBP / GIF     明确报错，不静默转码
 GBK 文件名的 zip      条目名会显示成乱码（不影响转换，因为写入时重编号）
-文字 → PDF            需要排版引擎（P4），现在明确报错
 DOCX 输出             暂不支持嵌图（会跳过并提示数量）
+```
+
+文字 → PDF 的排版只有 L1：
+
+```
+有     单栏分页 / 章节另起页 / 页码 / 首行缩进 2 字符 / 图按可用宽度缩放
+      中文按字符断行、英文按词断行
+没有   行首行尾禁则（逗号可能出现在行首）、标点挤压、中英混排间距、
+      孤行控制、脚注、多栏、图文环绕 —— 这些是 P5/L2
+字体   只用 TrueType(glyf)；CFF/OTF 明确报错。默认找 ~/.fonts/NotoSansSC-Regular.ttf
 ```
 
 PDF 作为源时：
