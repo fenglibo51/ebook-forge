@@ -439,6 +439,29 @@
   </div>
 </div>
 
+<!-- 开启分享模式：让用户自己设密钥 -->
+<div class="modal" id="tokenSetModal">
+  <div class="modal-backdrop"></div>
+  <div class="modal-box" style="width:min(500px,100%)">
+    <div class="modal-hd"><h3>设置管理密钥</h3></div>
+    <div class="modal-body" style="padding:20px 22px">
+      <p class="hint" style="margin:0 0 12px">
+        开启分享模式后，访问书库 / 记录 / 设置都要这个密钥。自己定，至少 8 位。
+      </p>
+      <div class="path-row">
+        <input class="input" id="newToken" placeholder="至少 8 位，自己定" autocomplete="off">
+        <button class="btn-sm" id="genToken">随机生成</button>
+      </div>
+      <p class="hint" id="tokenSetErr" style="color:var(--fail);margin-top:8px;min-height:18px"></p>
+    </div>
+    <div class="modal-ft">
+      <span class="grow"></span>
+      <button class="btn-ghost" id="tokenSetCancel">取消</button>
+      <button class="btn btn-primary" id="tokenSetOk">开启</button>
+    </div>
+  </div>
+</div>
+
 <!-- 开启分享模式后：把密钥怼到脸上 -->
 <div class="modal" id="tokenShowModal">
   <div class="modal-backdrop"></div>

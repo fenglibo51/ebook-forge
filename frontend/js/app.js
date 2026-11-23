@@ -909,8 +909,7 @@
       tip.style.marginTop = '0';
       tip.style.marginBottom = '20px';
       tip.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 8v5M12 16h.01"/><circle cx="12" cy="12" r="9"/></svg>
-        <div>这是别人分享给你的转换入口。你上传的文件只在服务器临时存 24 小时，
-        转换结果可以直接下载。看不到对方的书库和历史记录。</div>`;
+        <div>上传的文件在服务器只保留 24 小时，转换完直接下载。</div>`;
       head.parentNode.insertBefore(tip, head.nextSibling);
     }
   })();
@@ -1036,27 +1035,68 @@
   }
 
   if ($('#shareEnabled')) {
+    const setModal = () => $('#tokenSetModal');
+
     $('#shareEnabled').addEventListener('change', async (e) => {
       const want = e.target.checked;
       if (want) {
-        const ok = confirm('开启分享模式后：\n\n· 后台接口（书库/记录/设置）需要管理密钥\n· 会生成一个密钥，你需要记下来\n· 转换页会出现「生成分享链接」\n\n继续？');
-        if (!ok) { e.target.checked = false; return; }
-      } else {
-        const ok = confirm('关闭分享模式？\n\n所有已发出的分享链接会立刻失效。');
-        if (!ok) { e.target.checked = true; return; }
+        // 开启前先让用户自己定密钥，别强塞一个随机的
+        e.target.checked = false;
+        $('#newToken').value = '';
+        $('#tokenSetErr').textContent = '';
+        setModal()?.classList.add('show');
+        setTimeout(() => $('#newToken')?.focus(), 60);
+        return;
       }
+      const ok = confirm('关闭分享模式？\n\n所有已发出的分享链接会立刻失效。');
+      if (!ok) { e.target.checked = true; return; }
       try {
-        const r = await API.toggleShare(want);
-        if (want && r.admin_token) {
-          showTokenModal(r.admin_token);
-        } else if (!want) {
-          toast(`已关闭，${r.revoked || 0} 条分享链接已作废`);
-        }
+        const r = await API.toggleShare(false);
+        toast(`已关闭，${r.revoked || 0} 条分享链接已作废`);
         await refreshShareUI();
       } catch (err) {
-        e.target.checked = !want;
-        toast('操作失败：' + (err.message || err), 'fail');
+        e.target.checked = true;
+        toast('关闭失败：' + (err.message || err), 'fail');
       }
+    });
+
+    // 取消 → 开关保持关闭
+    $('#tokenSetCancel').onclick = () => {
+      setModal()?.classList.remove('show');
+      $('#shareEnabled').checked = false;
+    };
+    setModal()?.querySelector('.modal-backdrop').addEventListener('click', () => {
+      setModal()?.classList.remove('show');
+      $('#shareEnabled').checked = false;
+    });
+
+    // 随机生成一个
+    $('#genToken').onclick = () => {
+      const buf = new Uint8Array(12);
+      crypto.getRandomValues(buf);
+      $('#newToken').value = [...buf].map(b => b.toString(16).padStart(2, '0')).join('');
+      $('#tokenSetErr').textContent = '';
+    };
+
+    // 确定开启
+    $('#tokenSetOk').onclick = async () => {
+      const v = $('#newToken').value.trim();
+      if (v.length < 8) {
+        $('#tokenSetErr').textContent = '至少 8 位';
+        return;
+      }
+      try {
+        const r = await API.toggleShare(true, v);
+        setModal()?.classList.remove('show');
+        $('#shareEnabled').checked = true;
+        await refreshShareUI();
+        toast('分享模式已开启');
+      } catch (err) {
+        $('#tokenSetErr').textContent = String(err.message || err);
+      }
+    };
+    $('#newToken').addEventListener('keydown', e => {
+      if (e.key === 'Enter') $('#tokenSetOk').click();
     });
   }
 

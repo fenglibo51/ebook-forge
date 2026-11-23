@@ -140,7 +140,7 @@ const API = (() => {
 
     /* 分享模式开关 */
     shareStatus() { return get('/api/share/status'); },
-    toggleShare(enabled) { return postJSON('/api/share/toggle', { enabled }); },
+    toggleShare(enabled, adminToken = '') { return postJSON('/api/share/toggle', { enabled, admin_token: adminToken }); },
 
     /* 主人端：管理分享链接 */
     createShare(ttlHours = 24, note = '') {

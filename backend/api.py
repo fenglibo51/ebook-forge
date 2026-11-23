@@ -408,6 +408,7 @@ def clear_cache() -> dict[str, Any]:
 
 class ShareToggleIn(BaseModel):
     enabled: bool
+    admin_token: str = ""      # 用户自己设；留空 = 自动生成
 
 
 @router.get("/share/status")
@@ -431,7 +432,11 @@ def share_toggle(body: ShareToggleIn) -> dict[str, Any]:
 
     s = store.load_settings()
     if body.enabled:
-        tok = str(s.get("admin_token", "")).strip() or secrets.token_urlsafe(18)
+        want = body.admin_token.strip()
+        if want and len(want) < 8:
+            raise HTTPException(400, "密钥至少 8 位")
+        # 用户输了自己的就用他的；没输就沿用之前的，再没有才随机生成
+        tok = want or str(s.get("admin_token", "")).strip() or secrets.token_urlsafe(18)
         store.save_settings({"share_enabled": True, "admin_token": tok})
         return {"enabled": True, "admin_token": tok}
 
