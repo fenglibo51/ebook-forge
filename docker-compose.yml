@@ -1,17 +1,59 @@
+# EbookForge —— 电子书 / 漫画格式转换
+#
+# 用法：
+#   docker compose up -d --build      启动（首次会构建镜像，约 2 分钟）
+#   docker compose logs -f            看日志
+#   docker compose down               停止
+#
+# 只需要改一处：下面 volumes 里的书库路径。
+
 services:
   ebook-forge:
     build: .
+    image: ebook-forge:latest
     container_name: ebook-forge
     restart: unless-stopped
+
     ports:
-      # 宿主 8505（和老项目一致，反代不用改）→ 容器内 8506
+      # 左边 = NAS 上的端口（反代指向它，想换就改左边）
+      # 右边 = 容器内固定 8506，别动
       - "8505:8506"
+
     volumes:
-      # 书库要 rw：转换结果默认落在源文件同目录
+      # ── 书库 ──────────────────────────────────────────────────────
+      # 改成你自己的书库路径。必须是 rw：
+      #   转换结果默认写回源文件所在的目录，只读会失败。
       - /volume1/Book:/Book:rw
-      # 运行时数据（历史 / 设置 / 上传副本）
+
+      # ── 数据 ──────────────────────────────────────────────────────
+      # 转换记录、设置、上传的临时副本都在这里。
+      # 删掉这个目录 = 清空历史和配置（已转换出来的文件不受影响）。
       - ./data:/data
+
     environment:
+      # 数据目录（跟上面的挂载对应，不用改）
       EBOOKFORGE_DATA: /data
+      # 时区，影响记录里的时间显示
+      TZ: Asia/Shanghai
+
+      # ── 可选 ──────────────────────────────────────────────────────
+      # 蒙版 PDF 走渲染兜底时的精度：150 / 200 / 300
+      # 200 约 5 秒一页；300 体积翻倍速度减半。界面设置里也能改。
       BOOKFORGE_RENDER_DPI: "200"
+      # 是否允许自动渲染。改成 false 后，这类 PDF 直接报错，不会转成有损图片。
       BOOKFORGE_RENDER_FALLBACK: "true"
+      # 上传副本保留多久（秒）。默认 24 小时自动清理，界面里可手动清。
+      EBOOKFORGE_UPLOAD_TTL: "86400"
+
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8506/api/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+    # 处理大合集会吃内存，需要的话放开下面几行限制一下
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 2G
