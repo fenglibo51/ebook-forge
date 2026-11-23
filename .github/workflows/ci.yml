@@ -61,28 +61,16 @@ jobs:
           docker logs ebf
           exit 1
 
-      - name: 跑一次真实转换
+      - name: 端到端冒烟（上传→转换→下载→校验输出名）
         run: |
-          printf '第一章 测试\n\n　　这是 CI 冒烟用的正文。\n' > /tmp/ci.txt
-          UP=$(curl -sf -F "files=@/tmp/ci.txt" http://127.0.0.1:8506/api/upload)
-          echo "上传: $UP"
-          echo "$UP" | python3 -c "
-          import sys, json
-          f = json.load(sys.stdin)['files'][0]
-          print(json.dumps({'files': [f], 'target': 'pdf', 'options': {}}))
-          " > /tmp/ci-job.json
-          curl -sf -X POST -H 'Content-Type: application/json' \
-            --data @/tmp/ci-job.json http://127.0.0.1:8506/api/jobs > /tmp/ci-resp.json
-          cat /tmp/ci-resp.json
-          JID=$(python3 -c "import json;print(json.load(open('/tmp/ci-resp.json'))['job_id'])")
-          for i in $(seq 1 20); do
-            sleep 1
-            ST=$(curl -sf "http://127.0.0.1:8506/api/jobs/$JID")
-            echo "$ST" | grep -q '"status":"done"' && { echo "转换完成: $ST"; exit 0; }
-          done
-          echo "转换超时"
-          docker logs ebf
-          exit 1
+          # 用 .github/smoke_test.py，和发布时跑的是同一份脚本：
+          # 不只是「任务变成 done」，还要校验下载回来的文件名是原始书名
+          # （P1-1 那条随机 ID 回归就靠这里兜住）、PDF 魔数、文件大小。
+          python3 .github/smoke_test.py --base http://127.0.0.1:8506
+
+      - name: 失败时导出容器日志
+        if: failure()
+        run: docker logs ebf --tail 60 || true
 
       - name: 清理
         if: always()
