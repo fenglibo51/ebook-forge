@@ -26,9 +26,15 @@ services:
       - /volume1/Book:/Book:rw
 
       # ── 数据 ──────────────────────────────────────────────────────
-      # 转换记录、设置、上传的临时副本都在这里。
-      # 删掉这个目录 = 清空历史和配置（已转换出来的文件不受影响）。
-      - ./data:/data
+      # 转换记录、设置、上传的临时副本。
+      #
+      # 默认用命名卷：不用你做任何准备工作，首次创建会自动带上正确的属主。
+      - ebookforge-data:/data
+      #
+      # 想直接看到 data 里的 json 文件，可以改成下面这行（bind mount），
+      # 但**必须先手动建目录并改属主**，否则容器非 root 写不进去、起不来：
+      #   mkdir -p ./data && sudo chown -R 10000:10000 ./data
+      # - ./data:/data
 
     environment:
       # 数据目录（跟上面的挂载对应，不用改）
@@ -69,3 +75,6 @@ services:
     #   resources:
     #     limits:
     #       memory: 2G
+
+volumes:
+  ebookforge-data:

@@ -36,9 +36,11 @@ jobs:
 
       - name: 起容器验证健康检查
         run: |
-          docker run -d --name ebf -p 8506:8506 \
-            -v "${PWD}/ci-data:/data" \
-            ebook-forge:ci
+          # 用 named volume 而不是 bind mount：
+          # 容器以 uid 10000 运行，bind mount 一个宿主机目录时该目录归 runner 所有，
+          # 非 root 写不进去 → mkdir('/data/uploads') Permission denied。
+          # named volume 首次创建会从镜像的 /data 复制（含属主），不用额外 chown。
+          docker run -d --name ebf -p 8506:8506 ebook-forge:ci
           for i in $(seq 1 30); do
             sleep 2
             if curl -sf --max-time 3 http://127.0.0.1:8506/api/health; then
