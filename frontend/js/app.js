@@ -1023,6 +1023,18 @@
     }
   }
 
+  function showTokenModal(token) {
+    const m = $('#tokenShowModal');
+    if (!m) return;
+    $('#tokenShowValue').value = token;
+    m.classList.add('show');
+    $('#tokenShowOk').onclick = () => m.classList.remove('show');
+    $('#tokenShowCopy').onclick = async () => {
+      try { await navigator.clipboard.writeText(token); toast('密钥已复制'); }
+      catch { $('#tokenShowValue').select(); toast('请手动复制'); }
+    };
+  }
+
   if ($('#shareEnabled')) {
     $('#shareEnabled').addEventListener('change', async (e) => {
       const want = e.target.checked;
@@ -1036,7 +1048,7 @@
       try {
         const r = await API.toggleShare(want);
         if (want && r.admin_token) {
-          toast('分享模式已开启，管理密钥：' + r.admin_token);
+          showTokenModal(r.admin_token);
         } else if (!want) {
           toast(`已关闭，${r.revoked || 0} 条分享链接已作废`);
         }
@@ -1084,8 +1096,13 @@
   }
 
   /* ================= 启动 ================= */
+  // ⚠️ 先切页面，再拉数据。
+  // 早先 navigate() 排在几个 await 后面，浏览器会先渲染 HTML 里默认的
+  // 「格式转换」页，等网络回来才跳到刷新前那一页 —— 用户看到的是画面闪一下。
+  // 现在切页在同步阶段完成（第一个 await 之前），首帧就是对的页面。
+  navigate(location.hash.slice(1) || 'convert');
+
   (async () => {
-    // 启动就把设置读进来：拼服务器文件绝对路径、传给任务都要用
     try {
       const s = await API.settings();
       settingsCache = s;
@@ -1098,7 +1115,6 @@
     updateFmtState();
     renderQueue();
     refreshShareUI();
-    navigate(location.hash.slice(1) || 'convert');
   })();
 
 })();

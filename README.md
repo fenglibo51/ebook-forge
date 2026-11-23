@@ -196,6 +196,16 @@ print(r["pages"], r["out"], r["mode"])   # mode: "" 无损 / "render" 有损
 
 一条链接可以同时给几个人用，按浏览器会话互相隔离。对方上传的文件同样 24 小时后清掉。
 
+**忘记密钥了怎么办**（把分享模式关掉，恢复免密）：
+
+```bash
+docker exec ebook-forge python3 -c "
+from backend import store
+s = store.load_settings(); s['share_enabled'] = False; store.save_settings(s)
+print('已关闭分享模式')
+"
+```
+
 > 想用环境变量把密钥钉死（适合自动化部署）也可以：设 `EBOOKFORGE_ADMIN_TOKEN`，
 > 此时设置页的开关会变成只读。
 

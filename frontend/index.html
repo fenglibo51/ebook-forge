@@ -439,6 +439,31 @@
   </div>
 </div>
 
+<!-- 开启分享模式后：把密钥怼到脸上 -->
+<div class="modal" id="tokenShowModal">
+  <div class="modal-backdrop"></div>
+  <div class="modal-box" style="width:min(540px,100%)">
+    <div class="modal-hd"><h3>分享模式已开启</h3></div>
+    <div class="modal-body" style="padding:20px 22px">
+      <p class="hint" style="margin:0 0 12px">
+        这是你的<b>管理密钥</b>，记下来。以后访问书库 / 记录 / 设置都要它，
+        换设备或清浏览器缓存后要重输。
+      </p>
+      <div class="path-row">
+        <input class="input" id="tokenShowValue" readonly style="font-family:var(--mono)">
+        <button class="btn-sm" id="tokenShowCopy">复制</button>
+      </div>
+      <p class="hint" style="margin-top:12px">
+        忘了也没事 —— 进容器跑一条命令就能关掉分享模式，README 的「访问控制」里有。
+      </p>
+    </div>
+    <div class="modal-ft">
+      <span class="grow"></span>
+      <button class="btn btn-primary" id="tokenShowOk">我知道了</button>
+    </div>
+  </div>
+</div>
+
 <!-- 管理令牌 -->
 <div class="modal" id="tokenModal">
   <div class="modal-backdrop"></div>
