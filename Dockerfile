@@ -28,7 +28,18 @@ COPY frontend/ ./frontend/
 # 字体随镜像走，体积 +10MB，换来「开箱就能转中文 PDF」
 COPY assets/fonts/NotoSansSC-Regular.ttf /usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf
 
-RUN mkdir -p /data/uploads
+# ⚠️ COPY 会保留源文件权限，而这些文件在宿主机上是 600/700 ——
+# 不放开的话，切成非 root 用户后 /app 里的代码一律 Permission denied（实测踩过）。
+RUN chmod -R a+rX /app
+# 字体同样要放开：它是 COPY 进来的，默认 600 root，
+# 非 root 读不到 → 健康检查能过，一转文字书就 Permission denied（实测踩过）
+RUN chmod a+r /usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf
+
+RUN mkdir -p /data/uploads && chown -R 10000:10000 /data
+
+# 非 root 运行：与 NAS 上 data 目录的属主保持一致（uid 10000）。
+# /Book 是 777，所以写转换结果不受影响；data 是 700 属主 10000，正好能写。
+USER 10000:10000
 
 VOLUME ["/data"]
 EXPOSE 8506

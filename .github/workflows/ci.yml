@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 单元测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 引擎本身零依赖，测试只需要标准库。
+      # 字体在仓库里（assets/fonts），P4/P5 那批排版测试因此不会被跳过。
+      - name: 跑测试
+        run: python -m unittest discover -s tests -v
+
+      - name: 语法检查
+        run: python -m compileall -q bookforge backend
+
+  docker:
+    name: 镜像构建 + 冒烟
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 构建镜像
+        run: docker build -t ebook-forge:ci .
+
+      - name: 起容器验证健康检查
+        run: |
+          docker run -d --name ebf -p 8506:8506 \
+            -v "${PWD}/ci-data:/data" \
+            ebook-forge:ci
+          for i in $(seq 1 30); do
+            sleep 2
+            if curl -sf --max-time 3 http://127.0.0.1:8506/api/health; then
+              echo ""
+              echo "健康检查通过"
+              exit 0
+            fi
+          done
+          echo "容器起不来，日志："
+          docker logs ebf
+          exit 1
+
+      - name: 跑一次真实转换
+        run: |
+          printf '第一章 测试\n\n　　这是 CI 冒烟用的正文。\n' > /tmp/ci.txt
+          UP=$(curl -sf -F "files=@/tmp/ci.txt" http://127.0.0.1:8506/api/upload)
+          echo "上传: $UP"
+          echo "$UP" | python3 -c "
+          import sys, json
+          f = json.load(sys.stdin)['files'][0]
+          print(json.dumps({'files': [f], 'target': 'pdf', 'options': {}}))
+          " > /tmp/ci-job.json
+          curl -sf -X POST -H 'Content-Type: application/json' \
+            --data @/tmp/ci-job.json http://127.0.0.1:8506/api/jobs > /tmp/ci-resp.json
+          cat /tmp/ci-resp.json
+          JID=$(python3 -c "import json;print(json.load(open('/tmp/ci-resp.json'))['job_id'])")
+          for i in $(seq 1 20); do
+            sleep 1
+            ST=$(curl -sf "http://127.0.0.1:8506/api/jobs/$JID")
+            echo "$ST" | grep -q '"status":"done"' && { echo "转换完成: $ST"; exit 0; }
+          done
+          echo "转换超时"
+          docker logs ebf
+          exit 1
+
+      - name: 清理
+        if: always()
+        run: docker rm -f ebf || true

@@ -51,9 +51,11 @@ services:
       # 上传副本保留多久（秒）。默认 24 小时自动清理，界面里可手动清。
       EBOOKFORGE_UPLOAD_TTL: "86400"
 
-    # 禁止容器里的进程通过 setuid 之类的手段提权
+    # 容器内以 uid 10000 运行（Dockerfile 里的 USER），配合下面两条进一步收紧：
     security_opt:
-      - no-new-privileges:true
+      - no-new-privileges:true    # 禁止通过 setuid 之类的手段提权
+    cap_drop:
+      - ALL                       # 丢掉所有 Linux capabilities（纯 HTTP 服务不需要任何一条）
 
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8506/api/health', timeout=4)"]
