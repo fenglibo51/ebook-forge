@@ -123,6 +123,9 @@ _CONTENT_TYPES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="png" ContentType="image/png"/>
+  <Default Extension="jpg" ContentType="image/jpeg"/>
+  <Default Extension="jpeg" ContentType="image/jpeg"/>
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
 </Types>
 """
@@ -133,13 +136,50 @@ _ROOT_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 </Relationships>
 """
 
-_NS_DECL = ('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
-            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"')
+_RELS_HEAD = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+"""
 
+_NS_DECL = ('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+            'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"')
 
 def _esc(s: str) -> str:
     return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             .replace('"', "&quot;"))
+
+
+# 96 dpi 下 1 像素 = 9525 EMU（Word 的绘图单位）
+_EMU_PER_PX = 9525
+# 页面可用宽度：A4 11906 twips - 左右边距 1134*2，换算成 EMU 约 6 英寸
+_MAX_W_EMU = 5486400
+
+# 能直接嵌进 docx 的图片格式（content-types 里声明过的）
+_EMBEDDABLE = {"png", "jpg", "jpeg"}
+
+
+def _drawing_xml(rid: str, idx: int, w: int, h: int, name: str) -> str:
+    """图片的 DrawingML 片段。"""
+    cx = w * _EMU_PER_PX if w else _MAX_W_EMU
+    cy = h * _EMU_PER_PX if h else _MAX_W_EMU
+    if cx > _MAX_W_EMU:                      # 太宽就等比缩到版心宽度
+        cy = int(cy * _MAX_W_EMU / cx)
+        cx = _MAX_W_EMU
+    return (
+        '<w:p><w:r><w:drawing>'
+        '<wp:inline distT="0" distB="0" distL="0" distR="0">'
+        f'<wp:extent cx="{cx}" cy="{cy}"/>'
+        f'<wp:docPr id="{idx}" name="{_esc(name)}"/>'
+        '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        f'<pic:nvPicPr><pic:cNvPr id="{idx}" name="{_esc(name)}"/><pic:cNvPicPr/></pic:nvPicPr>'
+        f'<pic:blipFill><a:blip r:embed="{rid}"/>'
+        '<a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
+        f'<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>'
+        '</pic:pic></a:graphicData></a:graphic>'
+        '</wp:inline></w:drawing></w:r></w:p>')
 
 
 def to_bytes(book: TextBook) -> tuple[bytes, int]:
@@ -147,9 +187,14 @@ def to_bytes(book: TextBook) -> tuple[bytes, int]:
 
     手拼 XML 而不是用 ElementTree —— Word 对命名空间前缀敏感，
     ET 输出的 ns0: 前缀虽然合法，但部分阅读器（WPS 旧版）会不认。
+
+    图片现在能嵌了：PNG / JPEG 原字节放进 word/media/，document.xml 里用
+    DrawingML 引用。超出可嵌范围的格式（webp / gif 等）才计入 skipped。
     """
     paras: list[str] = []
     skipped = 0
+    media: list[tuple[str, bytes]] = []          # (filename, data)
+    rels: list[str] = []
 
     for ch in book.chapters:
         if ch.title:
@@ -162,7 +207,23 @@ def to_bytes(book: TextBook) -> tuple[bytes, int]:
                     paras.append(
                         f'<w:p><w:r><w:t xml:space="preserve">{_esc(block.text)}</w:t></w:r></w:p>')
             elif isinstance(block, ImageBlock):
-                skipped += 1
+                fmt = (block.fmt or "").lower()
+                if fmt == "jpg":
+                    fmt = "jpeg"
+                if fmt not in _EMBEDDABLE or not block.data:
+                    skipped += 1
+                    continue
+                idx = len(media) + 1
+                ext = "png" if fmt == "png" else "jpg"
+                fname = f"image{idx}.{ext}"
+                media.append((fname, block.data))
+                rid = f"rIdImg{idx}"
+                rels.append(
+                    f'<Relationship Id="{rid}" '
+                    f'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+                    f'Target="media/{fname}"/>')
+                paras.append(_drawing_xml(rid, idx, block.width or 0,
+                                          block.height or 0, fname))
 
     document = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
@@ -178,4 +239,8 @@ def to_bytes(book: TextBook) -> tuple[bytes, int]:
         zf.writestr("[Content_Types].xml", _CONTENT_TYPES)
         zf.writestr("_rels/.rels", _ROOT_RELS)
         zf.writestr("word/document.xml", document)
+        if rels:
+            zf.writestr("word/_rels/document.xml.rels", _RELS_HEAD + "\n".join(rels) + "\n</Relationships>\n")
+        for fname, data in media:
+            zf.writestr(f"word/media/{fname}", data)      # 原字节，不重压
     return buf.getvalue(), skipped
