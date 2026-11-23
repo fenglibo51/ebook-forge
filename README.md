@@ -89,6 +89,27 @@ python3 -m bookforge verify 原文件.cbz 转换后.pdf
 
 ### Docker（推荐）
 
+**方式一：直接用现成镜像**（不用 clone，不用等构建）
+
+```bash
+docker pull ghcr.io/fenglibo51/ebook-forge:latest
+
+docker run -d --name ebook-forge \
+  -p 8505:8506 \
+  -v /volume1/Book:/Book:rw \
+  -v ebookforge-data:/data \
+  -e EBOOKFORGE_DATA=/data \
+  -e TZ=Asia/Shanghai \
+  --restart unless-stopped \
+  --security-opt no-new-privileges:true \
+  --cap-drop ALL \
+  ghcr.io/fenglibo51/ebook-forge:latest
+```
+
+把 `/volume1/Book` 换成你自己的书库路径就行。
+
+**方式二：clone 下来自己构建**（想改代码用这个）
+
 ```bash
 git clone https://github.com/fenglibo51/ebook-forge.git
 cd ebook-forge
@@ -96,6 +117,9 @@ docker compose up -d --build
 ```
 
 打开 `http://<你的地址>:8505` 就能用。**开箱即用，不需要密码。**
+
+镜像有两个 tag：`:latest` 跟最新一版，`:1.0.0` 这种具体版本号方便回滚。
+出问题时 `docker pull ghcr.io/fenglibo51/ebook-forge:1.0.0` 换回已知能用的。
 
 **唯一要改的是书库路径。** 仓库里的 `docker-compose.yml` 就是下面这份：
 
