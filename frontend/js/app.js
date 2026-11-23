@@ -1034,6 +1034,16 @@
     $('#tokenShowValue').value = token;
     m.classList.add('show');
     $('#tokenShowOk').onclick = () => m.classList.remove('show');
+    const changeBtn = $('#tokenShowChange');
+    if (changeBtn) {
+      changeBtn.onclick = () => {
+        m.classList.remove('show');
+        $('#newToken').value = token;      // 预填当前值，改一部分也行
+        $('#tokenSetErr').textContent = '';
+        $('#tokenSetModal')?.classList.add('show');
+        setTimeout(() => $('#newToken')?.focus(), 60);
+      };
+    }
     $('#tokenShowCopy').onclick = async () => {
       try { await navigator.clipboard.writeText(token); toast('密钥已复制'); }
       catch { $('#tokenShowValue').select(); toast('请手动复制'); }
@@ -1046,18 +1056,27 @@
     $('#shareEnabled').addEventListener('change', async (e) => {
       const want = e.target.checked;
       if (want) {
-        // 开启前先让用户自己定密钥，别强塞一个随机的
-        e.target.checked = false;
-        $('#newToken').value = '';
-        $('#tokenSetErr').textContent = '';
-        setModal()?.classList.add('show');
-        setTimeout(() => $('#newToken')?.focus(), 60);
+        // 直接开启 + 自动随机密钥，开完弹窗告诉你。
+        // 这个密钥只是「主人 vs 外人」的区分，不需要你记 ——
+        // 设置页随时能查回来，所以随机就够，省一次输入。
+        try {
+          const r = await API.toggleShare(true, '');
+          // ⚠️ 先把新密钥存上：开关一开，后台立刻要令牌，
+          // 不存的话紧接着的 refreshShareUI() 就 401，弹出令牌框挡住当前弹窗。
+          API.setAdminToken(r.admin_token);
+          await refreshShareUI();
+          showTokenModal(r.admin_token);
+        } catch (err) {
+          e.target.checked = false;
+          toast('开启失败：' + (err.message || err), 'fail');
+        }
         return;
       }
       const ok = confirm('关闭分享模式？\n\n所有已发出的分享链接会立刻失效。');
       if (!ok) { e.target.checked = true; return; }
       try {
         const r = await API.toggleShare(false);
+        API.setAdminToken('');                // 免密了，本地别留着旧令牌
         toast(`已关闭，${r.revoked || 0} 条分享链接已作废`);
         await refreshShareUI();
       } catch (err) {
@@ -1069,7 +1088,8 @@
     // 取消 → 开关保持关闭
     $('#tokenSetCancel').onclick = () => {
       setModal()?.classList.remove('show');
-      $('#shareEnabled').checked = false;
+      // 分享模式这时候已经开着了（密钥是自动生成的），开关保持勾选
+      $('#shareEnabled').checked = true;
     };
     setModal()?.querySelector('.modal-backdrop').addEventListener('click', () => {
       setModal()?.classList.remove('show');
@@ -1093,6 +1113,7 @@
       }
       try {
         const r = await API.toggleShare(true, v);
+        API.setAdminToken(r.admin_token);     // 同上，先存再用
         setModal()?.classList.remove('show');
         $('#shareEnabled').checked = true;
         await refreshShareUI();
