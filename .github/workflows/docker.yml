@@ -28,9 +28,21 @@ jobs:
 
       - name: 准备 tag
         id: meta
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            TAGGED="${{ github.event.inputs.tag }}"
+          if [ -n "$INPUT_TAG" ]; then
+            TAGGED="$INPUT_TAG"
+            # 手动触发不许占用正式版本号。否则手动填个 1.0.3 就能把已经发布的
+            # 那个镜像标签覆盖掉 —— 历史版本就不再是历史了。
+            # 正式版只能走 git tag：git tag v1.0.4 && git push origin v1.0.4
+            # 前后都允许 v/V 前缀：V1.2.3 这种大小写混写也一样会撞上正式版标签。
+            if [[ "$TAGGED" =~ ^[vV]?[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+              echo "::error::手动触发不能用正式版本号 '${TAGGED}'，会覆盖已有镜像标签"
+              echo "正式发布请打 git tag：git tag v1.0.4 && git push origin v1.0.4"
+              echo "手动构建请用 dev / test-* / sha-* 这类名字"
+              exit 1
+            fi
           elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAGGED="${GITHUB_REF#refs/tags/}"
             TAGGED="${TAGGED#v}"          # v1.0.0 → 1.0.0

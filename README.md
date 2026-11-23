@@ -121,8 +121,8 @@ docker compose up -d --build
 镜像 tag 分三类：
 
 ```
-:latest     最新正式版（当前 1.0.2）
-:1.0.2      具体版本号，方便回滚（1.0.1 / 1.0.0 都留着）
+:latest     最新正式版（当前 1.0.4）
+:1.0.4      具体版本号（1.0.3 / 1.0.2 / 1.0.1 / 1.0.0 都留着，可以回滚）
 :dev        手动触发的开发构建，只推给自己用
 ```
 
@@ -130,11 +130,14 @@ docker compose up -d --build
 （`dev`、`test123` 都一样）都不会覆盖它 —— 免得谁发个测试镜像，所有
 `docker pull :latest` 的人跟着拿到未发布的代码。
 
-出问题时 `docker pull ghcr.io/fenglibo51/ebook-forge:1.0.2` 换回已知能用的；
-想退更早的版本就用 `:1.0.1`。
+手动触发还**不许填正式版本号**（`1.0.3`、`v1.0.3` 这种），工作流会直接拒绝 ——
+不然填一下就能把已经发布的那版镜像覆盖掉，历史版本就不再是历史了。
+
+出问题时 `docker pull ghcr.io/fenglibo51/ebook-forge:1.0.4` 换回已知能用的；
+想退更早的版本就用 `:1.0.3` 或 `:1.0.2`。
 
 > ⚠️ `:1.0.0` 是首次发布的版本，**不含之后几轮安全整改**（上传配额、孤儿清理、
-> 嵌套包限额那一批）。想要当前行为就拉 `:latest` 或 `:1.0.2`。
+> 嵌套包限额那一批）。想要当前行为就拉 `:latest` 或 `:1.0.4`。
 
 **唯一要改的是书库路径。** 仓库里的 `docker-compose.yml` 就是下面这份：
 
@@ -383,12 +386,16 @@ print('已关闭分享模式')
 
 ```
 接口                 默认上限        环境变量
-────────────────────────────────────────────────────────────────
+──────────────────────────────────────────────────────────────────────────────
 /api/upload          8256 MB         EBOOKFORGE_MAX_UPLOAD_MB + 64
-/api/s/upload        520 MB          EBOOKFORGE_SHARE_QUOTA_MB + 8
-/api/s/* 其余        4 MB            EBOOKFORGE_MAX_JSON_MB
-/api/* 其余          4 MB            EBOOKFORGE_MAX_JSON_MB
+/api/s/upload         136 MB         min(SHARE_QUOTA, SID_QUOTA, MAX_UPLOAD) + 8
+/api/s/* 其余           4 MB         EBOOKFORGE_MAX_JSON_MB
+/api/* 其余             4 MB         EBOOKFORGE_MAX_JSON_MB
 ```
+
+分享上传那一行取的是「访客实际受约束的几个额度里最小的那个」—— 默认会话额度
+128 MB 比单链接额度 512 MB 小，所以按 128 + 8 算。上限比真实可用额度大的部分
+纯属浪费带宽和解析开销。
 
 带 `Content-Length` 的直接按声明判；不带（chunked）的边收边数，超了就断开并返回 413。
 实测灌 75 MB 过去，进程内存增长 0 MB，临时盘也没落文件。

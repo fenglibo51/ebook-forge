@@ -16,7 +16,9 @@ from .naming import display_stem
 from .model import ComicBook
 from .pdf.writer import A4, A5, PDFWriter
 
-__version__ = "0.1.0"
+# 版本号只有一处：bookforge/__init__.py 的 __version__。
+# 这里曾经还有一行 __version__ = "0.1.0"，没人引用、也没跟着发版更新，
+# 只会让人 `import bookforge.convert` 时看到个对不上的数字。删了。
 
 COMIC_INPUTS = {".cbz", ".zip", ".cbr", ".cb7", ".cbc"}
 # 漫画源（→ cbz / zip / epub / pdf）

@@ -70,7 +70,7 @@ async def lifespan(_app: FastAPI):
                 pass
 
 
-app = FastAPI(title="EbookForge", version="1.0.3", docs_url="/api/docs",
+app = FastAPI(title="EbookForge", version="1.0.4", docs_url="/api/docs",
               lifespan=lifespan)
 
 
@@ -188,8 +188,24 @@ _MB = 1024 * 1024
 
 # 管理端上传：单次上传总量 + 64MB 的 multipart 开销
 _ADMIN_UPLOAD_MB = int(os.environ.get("EBOOKFORGE_MAX_UPLOAD_MB", "8192")) + 64
-# 分享上传：超过这条链接的累计配额就必然被拒，body 再大也没意义，多留 8MB 开销
-_SHARE_UPLOAD_MB = int(os.environ.get("EBOOKFORGE_SHARE_QUOTA_MB", "512")) + 8
+
+
+def _env_mb(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+# 分享上传：取访客实际受约束的几个额度里**最小**的那个。
+# 早先只按「单链接配额 512MB」算 —— 但会话额度默认只有 128MB，访客传一个
+# 300MB 的请求，body 层放行了，解析完才在业务层被会话额度拒掉。
+# 上限比实际能用的额度大，多出来的部分纯属浪费带宽和解析开销。
+_SHARE_UPLOAD_MB = min(
+    _env_mb("EBOOKFORGE_SHARE_QUOTA_MB", 512),
+    _env_mb("EBOOKFORGE_SID_QUOTA_MB", 128),
+    _env_mb("EBOOKFORGE_MAX_UPLOAD_MB", 8192),
+) + 8
 # JSON 接口（建任务、改设置这些）：4MB 绰绰有余
 _JSON_MB = int(os.environ.get("EBOOKFORGE_MAX_JSON_MB", "4"))
 

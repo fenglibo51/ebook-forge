@@ -195,13 +195,20 @@ def _run(job: Job) -> None:
         try:
             out_path = _out_path(Path(item.src), job.target, item.name,
                                  str(job.options.get("output_dir", "")))
-            r = convert(
-                item.src, job.target, out=out_path,
-                dpi=float(job.options.get("render_dpi", 200)),
-                page_size=str(job.options.get("page_size", "a5")),
-                font=str(job.options.get("font_path", "")),
-                src_name=item.name,     # 原始文件名，别让随机 file_id 变成书名
-            )
+            try:
+                r = convert(
+                    item.src, job.target, out=out_path,
+                    dpi=float(job.options.get("render_dpi", 200)),
+                    page_size=str(job.options.get("page_size", "a5")),
+                    font=str(job.options.get("font_path", "")),
+                    src_name=item.name,     # 原始文件名，别让随机 file_id 变成书名
+                )
+            except BaseException:
+                # 转换中途失败时引擎可能已经写了一半（见 _remove_stray 的说明）。
+                # 那一刻 item.out 还是空字符串，下面的 _drop_output 拿不到路径，
+                # 所以必须在这里按 out_path 清一次。
+                _remove_stray(out_path, Path(item.src))
+                raise
             item.mode = r.get("mode", "")
             item.note = r.get("note", "")
             item.pages = r.get("pages", 0)
@@ -358,6 +365,31 @@ def _drop_output(item: "JobItem") -> None:
         return
     try:
         Path(raw).unlink()
+    except OSError:
+        pass
+
+
+def _remove_stray(out: Path, src: Path) -> None:
+    """删掉本次转换留下的半成品。
+
+    什么时候会有半成品：引擎是边写边落盘的（CBZ/EPUB 用 zipfile 直接打开
+    最终路径），写到第 N 个条目时磁盘满或 I/O 出错，文件就留在那儿了 ——
+    实测留下过一个 134 字节的坏 zip，能打开但只有 1 个条目。
+
+    为什么这里敢删：out_path 是 convert() 调用**之前**由 _out_path() 选定的，
+    它保证返回的路径当时不存在（重名会一直往后加 _1、_2）。所以调用失败后
+    只要它现在存在，就只能是本次产生的。
+
+    绝不碰源文件 —— 同格式转换时两者可能指同一个地方，这里再挡一道。
+    """
+    try:
+        if out.resolve() == src.resolve():
+            return
+    except OSError:
+        pass
+    try:
+        if out.is_file():
+            out.unlink()
     except OSError:
         pass
 
