@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,9 @@ router = APIRouter(prefix="/api")
 
 UPLOAD_DIR = store.DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# 目录筛选扫描结果缓存：{(base, fmt): (时间戳, 目录集合, 是否截断)}
+_SCAN_CACHE: dict[tuple[str, str], tuple[float, set, bool]] = {}
 
 # 上传的临时文件保留 24 小时，超时自动清理
 UPLOAD_TTL = int(os.environ.get("EBOOKFORGE_UPLOAD_TTL", 86400))
@@ -204,6 +208,71 @@ def library(path: str = "") -> dict[str, Any]:
         "crumbs": crumbs,
         "items": items,
     }
+
+
+@router.get("/scan")
+def scan_format(fmt: str = Query(..., description="要检查的格式，如 mobi"),
+                path: str = "") -> dict[str, Any]:
+    """递归看当前目录下哪些子目录「内部含有该格式的文件」。
+
+    筛选 mobi 时，只有内部真有 mobi 的文件夹才该留下 —— 文件夹本身没有格式，
+    不判断就会出现「选了 mobi，所有文件夹全消失」的情况。
+
+    性能：递归 scandir，限制扫描条目数防 NAS 上卡死；结果缓存 30 秒。
+    """
+    s = store.load_settings()
+    root = Path(str(s.get("library_root", "/Book"))).expanduser()
+    if not root.exists():
+        raise HTTPException(404, f"书库根目录不存在：{root}")
+
+    base = (root / path.lstrip("/")).resolve() if path else root.resolve()
+    try:
+        base.relative_to(root.resolve())
+    except ValueError:
+        raise HTTPException(403, "路径越界")
+    if not base.is_dir():
+        raise HTTPException(404, "目录不存在")
+
+    want = fmt.lower().lstrip(".")
+    cache_key = (str(base), want)
+    now = time.time()
+    hit = _SCAN_CACHE.get(cache_key)
+    if hit and now - hit[0] < 30:
+        return {"dirs": sorted(hit[1]), "cached": True, "truncated": hit[2]}
+
+    found: set[str] = set()
+    truncated = False
+    budget = 8000                      # 最多看 8000 个目录条目，超了就截断
+    stack: list[tuple[Path, str]] = [(base, "")]
+    while stack:
+        cur, rel = stack.pop()
+        try:
+            entries = list(os.scandir(cur))
+        except (PermissionError, OSError):
+            continue
+        for e in entries:
+            budget -= 1
+            if budget <= 0:
+                truncated = True
+                break
+            if e.name.startswith("."):
+                continue
+            child_rel = f"{rel}/{e.name}".lstrip("/")
+            try:
+                if e.is_dir():
+                    stack.append((Path(e.path), child_rel))
+                elif e.name.lower().endswith("." + want):
+                    # 这个文件所在的目录（及它的所有上级）都算「含该格式」
+                    parts = child_rel.split("/")[:-1]
+                    for i in range(1, len(parts) + 1):
+                        found.add("/".join(parts[:i]))
+            except OSError:
+                continue
+        if truncated:
+            break
+
+    _SCAN_CACHE[cache_key] = (now, found, truncated)
+    return {"dirs": sorted(found), "cached": False, "truncated": truncated}
 
 
 # ── 转换任务 ──────────────────────────────────────────────────────────────

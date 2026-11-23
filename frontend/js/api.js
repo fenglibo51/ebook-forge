@@ -38,6 +38,11 @@ const API = (() => {
       return req('/api/upload', { method: 'POST', body: fd });
     },
 
+    scanFmt(fmt, path = '') {
+      return get('/api/scan?fmt=' + encodeURIComponent(fmt) +
+                 (path ? '&path=' + encodeURIComponent(path) : ''));
+    },
+
     library(path = '') {
       return get('/api/library' + (path ? '?path=' + encodeURIComponent(path) : ''));
     },

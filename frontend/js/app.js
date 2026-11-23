@@ -401,9 +401,10 @@
       $$('#browseCrumbs a').forEach(a => a.addEventListener('click', e => {
         e.preventDefault(); loadBrowse(a.dataset.p);
       }));
-      const fmts = [...new Set(r.items.filter(i => !i.is_dir && i.fmt).map(i => i.fmt))].sort();
+      const present = r.items.filter(i => !i.is_dir && i.fmt).map(i => i.fmt);
+      const all = [...new Set([...allFmts, ...present])].sort();
       $('#browseFilter').innerHTML = '<option value="">全部格式</option>' +
-        fmts.map(f => `<option value="${esc(f)}">${esc(f.toUpperCase())}</option>`).join('');
+        all.map(f => `<option value="${esc(f)}">${esc(f.toUpperCase())}</option>`).join('');
       renderBrowse();
     } catch (e) {
       host.innerHTML = `<div class="empty">${esc(e.message || e)}</div>`;
@@ -485,6 +486,8 @@
   /* ================= 书库页 ================= */
   let libPath = '';
   let libItems = [];
+  let scanCache = { fmt: '', path: '', dirs: null, truncated: false };
+  let allFmts = [];        // 引擎支持的全部输入格式，筛选用，跟当前目录有什么无关
   let libJobId = null;
 
   async function loadLibrary(path = '') {
@@ -495,11 +498,17 @@
       libPath = r.path;
       libItems = r.items;
       renderCrumbs(r.crumbs);
-      renderLibrary();
+      scanCache = { fmt: '', path: '', dirs: null, truncated: false };
+      if ($('#libFilter').value) applyLibFilter();
+      else renderLibrary();
       // 格式下拉按实际出现过的格式生成
       const fmts = [...new Set(r.items.filter(i => !i.is_dir && i.fmt).map(i => i.fmt))].sort();
+      const keepFmt = $('#libFilter').value;
+      const present = r.items.filter(i => !i.is_dir && i.fmt).map(i => i.fmt);
+      const all = [...new Set([...allFmts, ...present])].sort();
       $('#libFilter').innerHTML = '<option value="">全部格式</option>' +
-        fmts.map(f => `<option value="${esc(f)}">${esc(f.toUpperCase())}</option>`).join('');
+        all.map(f => `<option value="${esc(f)}">${esc(f.toUpperCase())}</option>`).join('');
+      if (keepFmt) $('#libFilter').value = keepFmt;
     } catch (e) {
       host.innerHTML = `<div class="empty">${esc(e.message || e)}</div>`;
     }
@@ -521,12 +530,20 @@
   function renderLibrary() {
     const kw = ($('#libSearch').value || '').toLowerCase();
     const f = $('#libFilter').value;
-    const rows = libItems.filter(it =>
-      (!kw || it.name.toLowerCase().includes(kw)) &&
-      (!f || (it.fmt === f))
-    );
+    const rows = libItems.filter(it => {
+      if (kw && !it.name.toLowerCase().includes(kw)) return false;
+      if (!f) return true;
+      if (it.is_dir) {
+        // 文件夹本身没有格式 —— 看它「内部」有没有目标格式的文件
+        if (!scanCache.dirs) return true;          // 扫描没成功就不过滤，别把目录藏了
+        return scanCache.dirs.has(it.name);
+      }
+      return it.fmt === f;
+    });
     if (!rows.length) {
-      $('#flist').innerHTML = '<div class="empty">这个目录里没有匹配的文件</div>';
+      $('#flist').innerHTML = `<div class="empty">${
+        f ? `这个目录及其子目录里没有 ${esc(f.toUpperCase())} 文件` : '这个目录里没有匹配的文件'
+      }</div>`;
       refreshBatch(); return;
     }
     $('#flist').innerHTML = rows.map(it => `
@@ -573,8 +590,27 @@
     $('#selAll').textContent = (boxes.length && boxes.every(b => b.checked)) ? '取消全选' : '全选';
   }
 
+  async function applyLibFilter() {
+    const f = $('#libFilter').value;
+    if (!f) {
+      scanCache = { fmt: '', path: '', dirs: null, truncated: false };
+      renderLibrary();
+      return;
+    }
+    $('#flist').innerHTML = `<div class="empty">正在扫子目录里有没有 ${esc(f.toUpperCase())} …</div>`;
+    try {
+      const r = await API.scanFmt(f, libPath);
+      scanCache = { fmt: f, path: libPath, dirs: new Set(r.dirs), truncated: r.truncated };
+      if (r.truncated) toast('目录太多，扫描提前截断，筛选可能不全', 'warn');
+    } catch (e) {
+      scanCache = { fmt: f, path: libPath, dirs: null, truncated: false };
+      toast('扫描子目录失败：' + (e.message || e), 'fail');
+    }
+    renderLibrary();
+  }
+
   $('#libSearch').addEventListener('input', renderLibrary);
-  $('#libFilter').addEventListener('change', renderLibrary);
+  $('#libFilter').addEventListener('change', applyLibFilter);
   $('#libRefresh').addEventListener('click', () => loadLibrary(libPath));
   $('#selAll').addEventListener('click', () => {
     const boxes = $$('#flist .cbx');
@@ -824,6 +860,10 @@
       const s = await API.settings();
       settingsCache = s;
       libRootPath = s.library_root || '';
+    } catch { }
+    try {
+      const c = await API.capabilities();
+      allFmts = [...new Set([...c.comic.inputs, ...c.text.inputs])].sort();
     } catch { }
     updateFmtState();
     renderQueue();
