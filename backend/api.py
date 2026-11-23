@@ -20,7 +20,7 @@ UPLOAD_DIR = store.DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # 目录筛选扫描结果缓存：{(base, fmt): (时间戳, 目录集合, 是否截断)}
-_SCAN_CACHE: dict[tuple[str, str], tuple[float, set, bool]] = {}
+_SCAN_CACHE: dict[tuple[str, str], tuple[float, set, bool, int]] = {}
 
 # 上传的临时文件保留 24 小时，超时自动清理
 UPLOAD_TTL = int(os.environ.get("EBOOKFORGE_UPLOAD_TTL", 86400))
@@ -238,11 +238,13 @@ def scan_format(fmt: str = Query(..., description="要检查的格式，如 mobi
     now = time.time()
     hit = _SCAN_CACHE.get(cache_key)
     if hit and now - hit[0] < 30:
-        return {"dirs": sorted(hit[1]), "cached": True, "truncated": hit[2]}
+        return {"dirs": sorted(hit[1]), "cached": True,
+                "truncated": hit[2], "scanned": hit[3]}
 
     found: set[str] = set()
     truncated = False
-    budget = 8000                      # 最多看 8000 个目录条目，超了就截断
+    scanned = 0
+    budget = 20000                     # 最多看 20000 个目录条目（文件和子目录都算），超了截断
     stack: list[tuple[Path, str]] = [(base, "")]
     while stack:
         cur, rel = stack.pop()
@@ -252,6 +254,7 @@ def scan_format(fmt: str = Query(..., description="要检查的格式，如 mobi
             continue
         for e in entries:
             budget -= 1
+            scanned += 1
             if budget <= 0:
                 truncated = True
                 break
@@ -271,8 +274,9 @@ def scan_format(fmt: str = Query(..., description="要检查的格式，如 mobi
         if truncated:
             break
 
-    _SCAN_CACHE[cache_key] = (now, found, truncated)
-    return {"dirs": sorted(found), "cached": False, "truncated": truncated}
+    _SCAN_CACHE[cache_key] = (now, found, truncated, scanned)
+    return {"dirs": sorted(found), "cached": False,
+            "truncated": truncated, "scanned": scanned}
 
 
 # ── 转换任务 ──────────────────────────────────────────────────────────────

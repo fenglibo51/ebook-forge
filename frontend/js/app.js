@@ -132,10 +132,15 @@
     txt: 'TXT —— 只留文字，排版、图片、章节层级都会丢。',
     docx: 'DOCX —— 暂不支持嵌图，图片会跳过并在结果里报数量。',
     fb2: 'FB2 —— XML 容器，正文和插图都能留住。',
-    cbz: 'CBZ —— 漫画容器，图片原字节直嵌。文字书不能转 CBZ。'
+    cbz: 'CBZ —— 漫画容器，图片原字节直嵌。文字书不能转 CBZ。',
+    zip: 'ZIP —— 和 CBZ 是同一个容器，只是扩展名不同；漫画打包用。'
   };
-  const TEXT_ONLY = new Set(['txt', 'fb2', 'docx']);
-  const COMIC_ONLY_TARGETS = new Set(['cbz']);
+  // 格式矩阵（和引擎保持一致）
+  const TEXT_SOURCES = new Set(['txt', 'fb2', 'docx']);          // 确定是文字书
+  const COMIC_SOURCES = new Set(['cbz', 'cb7', 'cbc', 'cbr', 'zip']);  // 确定是漫画包
+  const TEXT_TARGETS = new Set(['txt', 'fb2', 'docx', 'epub', 'mobi', 'pdf']);
+  const COMIC_TARGETS = new Set(['cbz', 'zip', 'epub', 'pdf']);
+  // epub / mobi / pdf 两栖（可能是漫画也可能是小说），由后端判断，前端不预设
 
   let queue = [];            // [{path,name,size}]
   let target = 'pdf';
@@ -145,17 +150,30 @@
   const fmtNote = $('#fmtNote');
 
   function updateFmtState() {
-    const exts = new Set(queue.map(f => (f.name.split('.').pop() || '').toLowerCase()));
-    const allText = queue.length > 0 && [...exts].every(e => TEXT_ONLY.has(e));
+    const exts = [...new Set(queue.map(f => (f.name.split('.').pop() || '').toLowerCase()))];
+    const allText = exts.length > 0 && exts.every(e => TEXT_SOURCES.has(e));
+    const allComic = exts.length > 0 && exts.every(e => COMIC_SOURCES.has(e));
+
     fmtBtns.forEach(b => {
-      if (b.dataset.f === 'azw3') return;                      // 永久禁用
-      const off = allText && COMIC_ONLY_TARGETS.has(b.dataset.f);
+      const t = b.dataset.f;
+      let off = false, why = '';
+      if (allText && !TEXT_TARGETS.has(t)) {
+        off = true; why = '队列里都是文字书（' + exts.join('/') + '），不能转成漫画容器';
+      } else if (allComic && !COMIC_TARGETS.has(t)) {
+        off = true; why = '队列里都是漫画包（' + exts.join('/') + '），不能转成文字格式';
+      }
       b.disabled = off;
-      b.title = off ? '这些文件是文字书，不能转成漫画容器' : '';
+      b.title = why;
     });
-    if (allText && COMIC_ONLY_TARGETS.has(target)) {
-      target = 'epub';
-      fmtBtns.forEach(x => x.classList.toggle('on', x.dataset.f === 'epub'));
+
+    // 当前选中的目标如果被禁用，自动挪到一个能用的
+    const cur = fmtBtns.find(x => x.dataset.f === target);
+    if (cur && cur.disabled) {
+      const fallback = [...fmtBtns].find(x => !x.disabled);
+      if (fallback) {
+        target = fallback.dataset.f;
+        fmtBtns.forEach(x => x.classList.toggle('on', x === fallback));
+      }
     }
     fmtNote.textContent = NOTES[target] || '';
     updateGoState();
@@ -601,7 +619,7 @@
     try {
       const r = await API.scanFmt(f, libPath);
       scanCache = { fmt: f, path: libPath, dirs: new Set(r.dirs), truncated: r.truncated };
-      if (r.truncated) toast('目录太多，扫描提前截断，筛选可能不全', 'warn');
+      if (r.truncated) toast(`目录太大，只扫了 ${r.scanned} 个条目就停了，筛选可能不全`, 'warn');
     } catch (e) {
       scanCache = { fmt: f, path: libPath, dirs: null, truncated: false };
       toast('扫描子目录失败：' + (e.message || e), 'fail');
