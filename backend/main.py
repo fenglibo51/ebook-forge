@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import os
+import secrets
 import sys
 from pathlib import Path
 
@@ -40,6 +42,42 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="EbookForge", version="0.1.0", docs_url="/api/docs",
               lifespan=lifespan)
+
+
+# ── 管理令牌 ──────────────────────────────────────────────────────────────
+# 设了 EBOOKFORGE_ADMIN_TOKEN 之后，/api/* 都要令牌，只有这两类豁免：
+#   /api/s/*        分享链接（访客用）
+#   /api/health, /api/capabilities  不敏感的只读信息
+# 不设就完全不拦（内网自用）。
+#
+# 令牌可以放在三处任意一个：X-Admin-Token 头、ebf_admin cookie、?k= 参数。
+# 为什么要 cookie：下载是 window.location 跳转，带不了自定义头。
+
+_ADMIN_TOKEN = os.environ.get("EBOOKFORGE_ADMIN_TOKEN", "").strip()
+_EXEMPT_PREFIX = ("/api/s/",)
+_EXEMPT_PATH = ("/api/health", "/api/capabilities")
+
+
+@app.middleware("http")
+async def admin_guard(request, call_next):
+    if not _ADMIN_TOKEN:
+        return await call_next(request)
+
+    path = request.url.path
+    # 静态资源（前端页面、图片）不拦，否则连登录框都打不开
+    if not path.startswith("/api/"):
+        return await call_next(request)
+    if path.startswith(_EXEMPT_PREFIX) or path in _EXEMPT_PATH:
+        return await call_next(request)
+
+    tok = (request.headers.get("X-Admin-Token")
+           or request.cookies.get("ebf_admin")
+           or request.query_params.get("k")
+           or "")
+    if tok and secrets.compare_digest(tok, _ADMIN_TOKEN):
+        return await call_next(request)
+    return JSONResponse(status_code=401,
+                        content={"detail": "需要管理令牌", "need_token": True})
 
 
 @app.exception_handler(Exception)

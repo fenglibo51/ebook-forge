@@ -33,6 +33,12 @@ services:
     environment:
       # 数据目录（跟上面的挂载对应，不用改）
       EBOOKFORGE_DATA: /data
+
+      # ── 管理令牌 ──────────────────────────────────────────────────
+      # 设了之后，后台接口（书库/记录/设置/缓存）都要令牌，分享链接的访客不受影响。
+      # 值写在同目录的 .env 文件里（不进 git），格式：EBOOKFORGE_ADMIN_TOKEN=xxx
+      # 留空 = 不启用，谁都能访问后台（只建议在纯内网用）。
+      EBOOKFORGE_ADMIN_TOKEN: ${EBOOKFORGE_ADMIN_TOKEN:-}
       # 时区，影响记录里的时间显示
       TZ: Asia/Shanghai
 

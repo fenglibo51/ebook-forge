@@ -4,7 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>EbookForge · 电子书格式转换</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23111'/%3E%3Cpath d='M9 9h8a4 4 0 014 4v10H13a4 4 0 01-4-4V9z' fill='%23F7F7F4'/%3E%3C/svg%3E">
+<link rel="icon" href="img/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="img/icon-32.png">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
 <link rel="stylesheet" href="css/variables.css">
 <link rel="stylesheet" href="css/layout.css">
 <link rel="stylesheet" href="css/components.css">
@@ -17,7 +19,12 @@
   <!-- ==================== 侧边栏 ==================== -->
   <aside id="sidebar">
     <div class="sb-head">
-      <div class="brand"><span class="mark"></span><span class="brand-text">EbookForge</span></div>
+      <div class="brand">
+        <img src="img/logo-h.png" class="brand-word" alt="EbookForge">
+        <img src="img/logo-h-dark.png" class="brand-word-dark" alt="EbookForge">
+        <img src="img/logo-icon.png" class="brand-icon" alt="EbookForge">
+        <img src="img/logo-icon-dark.png" class="brand-icon-dark" alt="EbookForge">
+      </div>
       <button id="toggle" title="收起侧边栏">
         <svg viewBox="0 0 24 24" width="16" height="16"><path d="M15 6l-6 6 6 6"/></svg>
       </button>
@@ -405,6 +412,25 @@
       <span class="grow"></span>
       <button class="btn-ghost" id="browseCancel">取消</button>
       <button class="btn btn-primary" id="browseAdd" disabled>加入队列</button>
+    </div>
+  </div>
+</div>
+
+<!-- 管理令牌 -->
+<div class="modal" id="tokenModal">
+  <div class="modal-backdrop"></div>
+  <div class="modal-box" style="width:min(440px,100%)">
+    <div class="modal-hd"><h3>需要管理令牌</h3></div>
+    <div class="modal-body" style="padding:20px 22px">
+      <p class="hint" style="margin:0 0 12px">
+        这台实例启用了管理令牌。输一次会记住，以后不用再输。
+        <br>（拿分享链接来的访客不需要这个。）
+      </p>
+      <div class="path-row">
+        <input class="input" id="tokenInput" type="password" placeholder="EBOOKFORGE_ADMIN_TOKEN">
+        <button class="btn btn-primary" id="tokenSave" style="padding:9px 18px">确定</button>
+      </div>
+      <p class="hint" id="tokenErr" style="color:var(--fail);margin-top:8px;min-height:18px"></p>
     </div>
   </div>
 </div>

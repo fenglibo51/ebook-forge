@@ -982,6 +982,33 @@
     });
   }
 
+
+  /* ================= 管理令牌 ================= */
+  window.addEventListener('ebf:need-token', () => {
+    if (API.isShared) return;                 // 分享链接不需要令牌
+    const m = $('#tokenModal');
+    if (m) m.classList.add('show');
+  });
+
+  if ($('#tokenSave')) {
+    const submit = async () => {
+      const v = $('#tokenInput').value.trim();
+      if (!v) return;
+      API.setAdminToken(v);
+      try {
+        await API.settings();                 // 拿这个当验证：能读到设置就是对的
+        $('#tokenModal').classList.remove('show');
+        $('#tokenErr').textContent = '';
+        location.reload();
+      } catch (e) {
+        API.setAdminToken('');
+        $('#tokenErr').textContent = '令牌不对：' + (e.message || e);
+      }
+    };
+    $('#tokenSave').addEventListener('click', submit);
+    $('#tokenInput').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  }
+
   /* ================= 启动 ================= */
   (async () => {
     // 启动就把设置读进来：拼服务器文件绝对路径、传给任务都要用

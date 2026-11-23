@@ -12,3 +12,6 @@ samples/*.pdf
 samples/*.b64
 
 data/
+
+# 本地环境变量（含管理员令牌，绝不进 git）
+.env

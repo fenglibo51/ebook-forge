@@ -25,9 +25,9 @@ MB = 1024 * 1024
 MAX_UPLOAD_MB = int(os.environ.get("EBOOKFORGE_MAX_UPLOAD_MB", "8192"))
 # 单文件：电子书几十上百 MB 常见，1 GB 足够；再大引擎整本读内存也扛不住
 MAX_FILE_MB = int(os.environ.get("EBOOKFORGE_MAX_FILE_MB", "1024"))
-MAX_FILES_UPLOAD = int(os.environ.get("EBOOKFORGE_MAX_FILES_UPLOAD", "50"))
-MAX_FILES_TASK = int(os.environ.get("EBOOKFORGE_MAX_FILES_TASK", "50"))
-MAX_QUEUE = int(os.environ.get("EBOOKFORGE_MAX_QUEUE", "20"))
+MAX_FILES_UPLOAD = int(os.environ.get("EBOOKFORGE_MAX_FILES_UPLOAD", "10"))
+MAX_FILES_TASK = int(os.environ.get("EBOOKFORGE_MAX_FILES_TASK", "10"))
+MAX_QUEUE = int(os.environ.get("EBOOKFORGE_MAX_QUEUE", "10"))
 
 # 目录筛选扫描结果缓存：{(base, fmt): (时间戳, 目录集合, 是否截断)}
 _SCAN_CACHE: dict[tuple[str, str], tuple[float, set, bool, int]] = {}

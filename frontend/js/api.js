@@ -26,12 +26,34 @@ const API = (() => {
     ? `t=${encodeURIComponent(SHARE.token)}&sid=${encodeURIComponent(SHARE.sid)}`
     : '';
 
+  /* ---------- 管理令牌 ---------- */
+  const TOKEN_KEY = 'ebookforge:admin-token';
+  const adminToken = () => localStorage.getItem(TOKEN_KEY) || '';
+
+  function setAdminToken(v) {
+    if (v) {
+      localStorage.setItem(TOKEN_KEY, v);
+      // 同时写 cookie：下载是 location 跳转，带不了自定义头
+      document.cookie = `ebf_admin=${encodeURIComponent(v)}; path=/; max-age=31536000; SameSite=Lax`;
+    } else {
+      localStorage.removeItem(TOKEN_KEY);
+      document.cookie = 'ebf_admin=; path=/; max-age=0';
+    }
+  }
+
   /* ---------- 请求 ---------- */
   async function req(path, opts = {}) {
+    const t = adminToken();
+    if (t && !path.startsWith('/api/s/')) {
+      opts = { ...opts, headers: { ...(opts.headers || {}), 'X-Admin-Token': t } };
+    }
     const res = await fetch(base + path, opts);
     const ct = res.headers.get('content-type') || '';
     const body = ct.includes('application/json') ? await res.json() : await res.text();
     if (!res.ok) {
+      if (res.status === 401 && body && body.need_token) {
+        window.dispatchEvent(new CustomEvent('ebf:need-token'));
+      }
       const msg = (body && body.detail) || body || `HTTP ${res.status}`;
       throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
     }
@@ -54,6 +76,8 @@ const API = (() => {
   return {
     /* 分享模式标记，app.js 用 */
     share: SHARE,
+    adminToken,
+    setAdminToken,
     get isShared() { return !!SHARE; },
 
     health: () => get('/api/health'),
