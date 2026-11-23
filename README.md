@@ -112,14 +112,20 @@ services:
 
     volumes:
       - /volume1/Book:/Book:rw    # ← 改成你的书库路径，必须 rw
-      - ./data:/data              # 记录/设置/上传副本
+      - ebookforge-data:/data     # 记录/设置/上传副本（命名卷，不用你准备）
 
     environment:
       EBOOKFORGE_DATA: /data
+      EBOOKFORGE_ADMIN_TOKEN: ${EBOOKFORGE_ADMIN_TOKEN:-}   # 留空 = 不开后台认证
       TZ: Asia/Shanghai
       BOOKFORGE_RENDER_DPI: "200"          # 150 / 200 / 300，界面里也能改
       BOOKFORGE_RENDER_FALLBACK: "true"    # false = 关掉渲染兜底，这类 PDF 直接报错
       EBOOKFORGE_UPLOAD_TTL: "86400"       # 上传副本保留 24 小时
+
+    security_opt:
+      - no-new-privileges:true             # 禁止 setuid 提权
+    cap_drop:
+      - ALL                                # 纯 HTTP 服务不需要任何 capability
 
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8506/api/health', timeout=4)"]
@@ -127,6 +133,9 @@ services:
       timeout: 5s
       start_period: 15s
       retries: 3
+
+volumes:
+  ebookforge-data:
 ```
 
 > ⚠️ `:/Book` 后面必须是 `rw`（可写）—— 转换结果默认写回源文件所在的目录，只读会失败。
@@ -134,6 +143,49 @@ services:
 不想用 git clone 也行，把上面这份存成 `docker-compose.yml`，
 再把仓库里的 `Dockerfile`、`bookforge/`、`backend/`、`frontend/`、`assets/`、`requirements.txt` 和它放同一层，
 `docker compose up -d --build` 一样能起来。
+
+### ⚠️ 权限：容器不是 root，挂载目录得让它写得进去
+
+镜像里是 `USER 10000:10000` 运行的，**没有 root 权限**。这是故意的：万一哪天转换引擎被恶意文件打穿，攻击者拿到的也是一个连 `/etc` 都改不了的普通用户。
+
+代价是宿主机目录的属主必须对得上。
+
+**用命名卷（默认）** —— 什么都不用管。Docker 首次创建卷时会继承镜像里 `/data` 的属主（10000:10000）。
+
+**用 bind mount（想直接看 data 里的 json）** —— 必须先手动建目录并改属主，否则容器起不来：
+
+```bash
+mkdir -p ./data
+sudo chown -R 10000:10000 ./data      # 群晖上去掉 sudo
+```
+
+然后用 `docker-compose.override.yml` 覆盖（这个文件不进 git）：
+
+```yaml
+# docker-compose.override.yml
+services:
+  ebook-forge:
+    volumes:
+      - /volume1/Book:/Book:rw
+      - ./data:/data
+```
+
+**书库目录（`/Book`）也要能让 uid 10000 写。** 转换结果默认写在源文件旁边，所以整个书库路径对它是可写的。群晖上两种做法：
+
+```
+① 简单粗暴（个人 NAS 够用）
+   File Station → 右键书库文件夹 → 属性 → 权限 → 给 your_uid 读写
+
+② 走 ACL（多人共用时用这个）
+   sudo synoacltool -add /volume1/Book 'user:10000:allow:rwxpdDaARWc--:fd--'
+   sudo synoacltool -get /volume1/Book          # 确认加上了
+```
+
+> 如果转换时报 `Permission denied`，先查属主：`ls -ld /volume1/Book`，看那个数字是不是 10000。
+
+### 不想给写权限？
+
+设置里指定一个「统一输出目录」，只把那个目录挂成 rw，书库挂成 `ro` 也行 —— 代价是转换结果不再落在源文件旁边，得去输出目录里找。
 
 ### 不用 Docker
 
@@ -246,6 +298,26 @@ print('已关闭分享模式')
 
 压缩包在解压前会按头部声明的大小检查（总解压量 / 单条目 / 条目数），炸弹包直接拒绝。
 
+**解压限额单独一组**（`bookforge/formats/limits.py`，CBZ / EPUB / DOCX 共用）：
+
+```
+单条目        256 MB      BOOKFORGE_MAX_ENTRY_MB
+整包解压总量   4096 MB     BOOKFORGE_MAX_TOTAL_MB
+条目数        5000        BOOKFORGE_MAX_ENTRIES
+```
+
+7z 除了看头部声明，解压完还会按**实际字节数**再卡一次 —— 声明字段是可以撒谎的（改几个字节就能把几十 GB 说成几十 KB）。
+
+**上传副本的清理**（三处，都是自动的）：
+
+```
+启动时       清一次过期的
+每小时       定时清一次（EBOOKFORGE_CACHE_INTERVAL 调间隔，设 0 关掉）
+建任务时     顺手清一次
+```
+
+设置页能看到当前占用、也能手动清。
+
 ---
 
 ## 📁 转换完的文件去哪了
@@ -268,8 +340,10 @@ print('已关闭分享模式')
 | **内存** | 整本读进内存处理。单本几个 GB 的合集会吃很多内存 |
 | **渲染速度** | 蒙版 PDF 走渲染兜底时约 5 秒/页，162 页大约 15 分钟 |
 | **进度粒度** | 进度按文件算，不是按页 |
-| **字体** | 只支持 TrueType（`.ttf`），CFF / OTF 会报错 |
-| **DOCX 输出** | 暂不支持嵌图，图片会跳过并在结果里告诉你数量 |
+| **CFF 字体体积** | `.otf`（CFF 轮廓）能用了，但不做子集化 —— 16MB 的思源黑体会整份嵌进 PDF。`.ttf` 是子集化的，几 MB 的字体嵌完只剩几 KB |
+| **DOCX 嵌图格式** | PNG / JPEG 原字节嵌入。webp / gif 会跳过并在结果里告诉你数量（DOCX 里这两个格式兼容性太差） |
+| **AZW3 / CBR** | 不做。KF8 要重写整套解析，CBR 是 RAR5，都得引入外部库 |
+| **解压上限** | 单条目 256MB / 整包 4GB / 5000 个条目，防解压炸弹。大画集要调 `BOOKFORGE_MAX_ENTRY_MB` |
 
 ---
 
@@ -284,7 +358,7 @@ bookforge/          转换引擎（零依赖，可以单独 import 当库用）
   pdf/              PDF 读写、字体嵌入、排版、渲染兜底
 backend/            FastAPI 服务
 frontend/           原生 HTML / CSS / JS，无框架无构建
-tests/              100 项单元测试
+tests/              134 项单元测试（含恶意压缩包、跨会话越权、PWA 契约）
 ```
 
 ```bash

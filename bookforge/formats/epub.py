@@ -19,7 +19,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..model import IMAGE_EXTS, ComicBook, Page, normalize_fmt
+from . import limits
 from . import png
+
+
+def _check_zip_limits(zf: zipfile.ZipFile) -> None:
+    """打开 zip 后先按头部声明的大小过一遍限额，再决定要不要真解压。
+
+    用 zipinfo.file_size（声明的解压后大小），不用真解压就能拦住
+    「几百 KB 解出几十 GB」的包。CBZ / EPUB / DOCX 共用同一套限额。
+    """
+    infos = zf.infolist()
+    limits.check_count(len(infos))
+    total = 0
+    for info in infos:
+        limits.check_entry(info.filename, info.file_size)
+        total += info.file_size
+        limits.check_total(total)
 
 
 class EPUBError(ValueError):
@@ -83,6 +99,8 @@ def read(path: str | Path) -> ComicBook:
         zf = zipfile.ZipFile(path)
     except zipfile.BadZipFile:
         raise EPUBError("epub 文件损坏（不是有效的 zip 结构）")
+
+    _check_zip_limits(zf)
 
     with zf:
         names = set(zf.namelist())
@@ -334,6 +352,8 @@ def read_text(path: str | Path) -> TextBook:
         zf = zipfile.ZipFile(path)
     except zipfile.BadZipFile:
         raise EPUBError("epub 文件损坏（不是有效的 zip 结构）")
+
+    _check_zip_limits(zf)
 
     with zf:
         names = set(zf.namelist())

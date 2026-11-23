@@ -8,7 +8,12 @@
  * /api/* 一律直连网络，绝不缓存：缓存了任务进度和文件列表只会显示过期数据。
  */
 
-const CACHE = 'ebf-v1';
+// 改了 SW 的缓存策略（比如新增/删除预缓存项）就把版本号 +1。
+// activate 里会把所有不等于这个版本的缓存删掉，旧缓存不会一直堆在用户机器上。
+// 注意：只改前端业务代码（app.js / css）时**不用**动它 —— 下面 js/css 走的是
+// 网络优先，用户刷新就拿到新的，不靠换缓存名。
+const VERSION = 2;
+const CACHE = `ebf-v${VERSION}`;
 
 // 只需要壳，页面本身走网络（避免缓存到旧 HTML 导致更新后看不到新功能）
 const SHELL = [
@@ -54,9 +59,26 @@ self.addEventListener('fetch', (e) => {
   if (url.origin !== location.origin) return;      // 跨域不碰
   if (url.pathname.startsWith('/api/')) return;    // 接口永远直连
 
-  // 静态资源：缓存优先，后台顺便更新
-  const isStatic = /\.(css|js|png|ico|svg|woff2?)$/.test(url.pathname);
-  if (isStatic) {
+  // ── 代码类（js/css）和图片分开对待 ──────────────────────────────────
+  // js/css 是功能本体，缓存优先会让用户升级后还跑旧代码（表现为「明明修好了
+  // 但我这还坏着」）。所以这两类走网络优先，断网时才用缓存。
+  const isCode = /\.(css|js)$/.test(url.pathname);
+  if (isCode) {
+    e.respondWith(
+      fetch(req).then(resp => {
+        if (resp && resp.ok) {
+          const copy = resp.clone();
+          caches.open(CACHE).then(c => c.put(req, copy)).catch(() => {});
+        }
+        return resp;
+      }).catch(() => caches.match(req))
+    );
+    return;
+  }
+
+  // 图片 / 字体 / 图标基本不变，缓存优先最快
+  const isAsset = /\.(png|ico|svg|jpe?g|webp|woff2?)$/.test(url.pathname);
+  if (isAsset) {
     e.respondWith(
       caches.match(req).then(hit => {
         const fetching = fetch(req).then(resp => {

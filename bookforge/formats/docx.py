@@ -19,6 +19,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from . import limits
 from ..model import Chapter, ImageBlock, Paragraph, TextBook
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -28,6 +29,21 @@ PKG = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 
 _HEADING_RE = re.compile(r"(?:heading|标题|標題)\s*([1-9])?", re.I)
 _MEDIA_FMT = {"png": "png", "jpg": "jpeg", "jpeg": "jpeg", "gif": "gif", "webp": "webp"}
+
+
+def _check_zip_limits(zf: zipfile.ZipFile) -> None:
+    """打开 zip 后先按头部声明的大小过一遍限额，再决定要不要真解压。
+
+    用 zipinfo.file_size（声明的解压后大小），不用真解压就能拦住
+    「几百 KB 解出几十 GB」的包。CBZ / EPUB / DOCX 共用同一套限额。
+    """
+    infos = zf.infolist()
+    limits.check_count(len(infos))
+    total = 0
+    for info in infos:
+        limits.check_entry(info.filename, info.file_size)
+        total += info.file_size
+        limits.check_total(total)
 
 
 class DOCXError(ValueError):
@@ -56,6 +72,8 @@ def read(path) -> TextBook:
         zf = zipfile.ZipFile(path)
     except zipfile.BadZipFile:
         raise DOCXError("docx 文件损坏（不是有效的 zip）")
+
+    _check_zip_limits(zf)
 
     with zf:
         try:

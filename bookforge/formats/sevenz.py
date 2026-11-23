@@ -436,8 +436,18 @@ def read_all(path: str | Path, *,
     pack_offsets = _pack_offsets(streams)
 
     blobs: list[bytes] = []
+    actual = 0
     for folder in streams.folders:
-        blobs.append(_decode_folder(data, folder, streams.pack_sizes, pack_offsets))
+        blob = _decode_folder(data, folder, streams.pack_sizes, pack_offsets)
+        actual += len(blob)
+        # 头部声明的大小可以撒谎，这里按**实际解压出来的字节数**再卡一次。
+        # 注意：lzma.decompress 是一次性调用，解压过程中拦不住 ——
+        # 这段只能保证「解出来之后不再继续用它」，真正省内存还得靠头部声明那一道。
+        if actual > max_total:
+            raise SevenZError(
+                f"7z 实际解压出 {actual / 1048576:.0f} MB，超过上限 "
+                f"{max_total / 1048576:.0f} MB（头部声明的 {declared / 1048576:.0f} MB 不可信）")
+        blobs.append(blob)
 
     # 按 substream 切分并分配给非空文件
     out: dict[str, bytes] = {}

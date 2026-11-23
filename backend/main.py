@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import secrets
 import time
@@ -39,7 +40,34 @@ async def lifespan(_app: FastAPI):
             print(f"[cache] 启动清理：{r['removed']} 个过期上传副本，释放 {r['freed'] / 1048576:.1f} MB")
     except Exception as e:
         print(f"[cache] 启动清理失败：{e}")
-    yield
+
+    # 之后按小时自己清 —— NAS 上的实例可能几周不转换一次，
+    # 光靠「启动时清 + 建任务时清」会让上传副本一直占着盘。
+    # 间隔用 EBOOKFORGE_CACHE_INTERVAL 调（秒），设 0 关掉。
+    interval = int(os.environ.get("EBOOKFORGE_CACHE_INTERVAL", "3600"))
+
+    async def _periodic_cleanup():
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                # 扫目录是阻塞操作，丢线程里跑，别卡住正在处理的请求
+                r = await asyncio.to_thread(cleanup_uploads)
+                if r["removed"]:
+                    print(f"[cache] 定时清理：{r['removed']} 个过期上传副本，"
+                          f"释放 {r['freed'] / 1048576:.1f} MB")
+            except Exception as e:
+                print(f"[cache] 定时清理失败：{e}")
+
+    task = asyncio.create_task(_periodic_cleanup()) if interval > 0 else None
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(title="EbookForge", version="1.0.0", docs_url="/api/docs",
@@ -52,7 +80,9 @@ app = FastAPI(title="EbookForge", version="1.0.0", docs_url="/api/docs",
 #   /api/health, /api/capabilities  不敏感的只读信息
 # 不设就完全不拦（内网自用）。
 #
-# 令牌可以放在三处任意一个：X-Admin-Token 头、ebf_admin cookie、?k= 参数。
+# 令牌只认两处：X-Admin-Token 头、ebf_admin cookie。
+# 曾经支持 ?k=<token>，已移除 —— URL 会进浏览器历史、反代 access log、
+# 分享出去的截图，等于把管理权限写在明面上。
 # 为什么要 cookie：下载是 window.location 跳转，带不了自定义头。
 
 _EXEMPT_PREFIX = ("/api/s/",)
@@ -115,7 +145,7 @@ async def admin_guard(request, call_next):
 
     tok = (request.headers.get("X-Admin-Token")
            or request.cookies.get("ebf_admin")
-           or request.query_params.get("k")
+           or ""
            or "")
     if tok and secrets.compare_digest(tok, token):
         return await call_next(request)

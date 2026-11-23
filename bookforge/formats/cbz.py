@@ -20,14 +20,15 @@ import zipfile
 from pathlib import Path
 
 from ..model import IMAGE_EXTS, ComicBook, Page, normalize_fmt
-from . import png
+from . import limits, png
 
 JUNK_NAMES = {".ds_store", "thumbs.db", "desktop.ini", "comicinfo.xml"}
 
 # 解压炸弹防护：用 zipinfo.file_size（压缩包里声明的解压后大小）预判，
 # 不需要真解压就能拦住「几百 KB 解出几十 GB」的包。
-MAX_TOTAL_BYTES = int(os.environ.get("BOOKFORGE_MAX_TOTAL_MB", "4096")) << 20
-MAX_PAGE_BYTES = int(os.environ.get("BOOKFORGE_MAX_PAGE_MB", "256")) << 20
+# 限额统一由 formats/limits.py 管，这里保留别名方便老代码/环境变量兼容
+MAX_TOTAL_BYTES = limits.MAX_TOTAL_BYTES
+MAX_PAGE_BYTES = limits.MAX_ENTRY_BYTES
 
 
 # 图片已压缩，再 deflate 一遍只是浪费时间；PNG/BMP 这种反而能省点空间

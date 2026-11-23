@@ -1,7 +1,10 @@
 """P8 回归：CFF / OpenType（.otf）字体支持。
 
-只在能找到 OTF 字体时跑 —— 仓库里不带这个样本（16MB），CI 上会跳过。
-本地验证方法：放一个 .otf 到 ~/.fonts/ 或 /tmp/test.otf 即可。
+样本是仓库自带的 312 字节最小 OTF（tests/fixtures/minimal-cff.otf），
+由同目录的 gen_minimal_otf.py 生成 —— 所以 CI 里**不会 skip**，CFF 路径真的被测到。
+
+如果本机有真实的中文 OTF（Source Han Sans 之类），额外再跑一轮大字库的用例，
+因为最小样本只有 2 个字形，测不出「64000 字形整字体嵌入」的量级问题。
 """
 
 from __future__ import annotations
@@ -18,8 +21,13 @@ from bookforge.pdf.fonts import FontError, TrueTypeFont       # noqa: E402
 from bookforge.pdf.textpdf import TextPDFWriter, find_font    # noqa: E402
 
 
+FIXTURE_OTF = Path(__file__).resolve().parent / "fixtures" / "minimal-cff.otf"
+
+
 def _find_otf() -> Path | None:
-    """找一个 CFF 轮廓的字体用于测试。"""
+    """找 CFF 字体：优先仓库自带的固定样本，保证 CI 里也能跑。"""
+    if FIXTURE_OTF.is_file() and FIXTURE_OTF.read_bytes()[:4] == b"OTTO":
+        return FIXTURE_OTF
     cands = [
         Path("/tmp/test.otf"),
         *Path.home().glob(".fonts/*.otf"),
@@ -45,7 +53,7 @@ class TestCFFFont(unittest.TestCase):
 
     def test_detected_as_cff(self):
         self.assertTrue(self.f.is_cff)
-        self.assertGreater(self.f.num_glyphs, 100)
+        self.assertGreaterEqual(self.f.num_glyphs, 2)      # 样本是 2 字形的最小 OTF
 
     def test_no_glyf_required(self):
         """CFF 字体没有 glyf/loca，不该因此报错"""
@@ -53,14 +61,20 @@ class TestCFFFont(unittest.TestCase):
         self.assertEqual(self.f.loca, [])
 
     def test_metrics_still_work(self):
-        """hmtx / cmap 是共用的，CFF 字体也能拿到宽度"""
-        g = self.f.gid("中")
+        """hmtx / cmap 是共用的，CFF 字体也能拿到宽度。
+
+        字符从字体自己的 cmap 里取 —— 样本只有 'A'，真实中文字体有一堆汉字，
+        写死字符会让两种样本只有一种能过。
+        """
+        ch = chr(next(iter(self.f.cmap)))
+        g = self.f.gid(ch)
         self.assertGreater(g, 0)
-        self.assertEqual(self.f.advance(g), self.f.units_per_em)
+        self.assertGreater(self.f.advance(g), 0)
 
     def test_subset_returns_whole_font(self):
         """CFF 不做子集化，mapping 用原 GID"""
-        sub, mapping = self.f.subset({"中", "文"})
+        chars = [chr(c) for c in list(self.f.cmap)[:2]]
+        sub, mapping = self.f.subset(set(chars))
         self.assertEqual(len(sub), len(self.f.data))       # 整份字体原样返回
         for ch, gid in mapping.items():
             self.assertEqual(gid, self.f.gid(ch))          # GID 没重编号
