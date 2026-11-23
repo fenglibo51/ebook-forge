@@ -7,7 +7,14 @@ html,body{height:100%}
 body{
   background:var(--bg);color:var(--ink);font-family:var(--font);
   font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased;
+  /* 工具型界面：文字上保持箭头，不显示 I 型光标（否则看着像可编辑）。
+     注意这不影响「能不能选中复制」—— 拖动照样能选，只是鼠标形状不变。 */
+  cursor:default;
 }
+
+/* 真正要输入的地方才用 I 型 */
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+textarea,[contenteditable="true"]{cursor:text}
 button{font-family:inherit;font-size:inherit;cursor:pointer;border:none;background:none;color:inherit}
 input,select,textarea{font-family:inherit;font-size:inherit;color:inherit}
 svg{display:block;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
@@ -33,6 +40,7 @@ nav{display:flex;flex-direction:column;gap:2px;flex:1}
 .nav-item{
   display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:var(--r-md);
   color:var(--ink-2);position:relative;white-space:nowrap;transition:background var(--t),color var(--t);
+  cursor:pointer;          /* <a> 没有 href 时浏览器不给 pointer，手动补 */
 }
 .nav-item:hover{background:var(--hover);color:var(--ink)}
 .nav-item.active{background:var(--hover);color:var(--ink);font-weight:500}

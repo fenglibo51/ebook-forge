@@ -111,7 +111,8 @@
   display:grid;place-items:center;font-size:9px;font-weight:700;color:var(--ink-2);
   flex:0 0 30px;letter-spacing:.02em;
 }
-.frow .nm{flex:1;min-width:0;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.frow .nm{flex:1;min-width:0;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:default}
+.frow .nm.dir{cursor:pointer}
 .frow .nm.dir{font-weight:500}
 .frow:hover .nm{color:var(--ink)}
 .frow .sz{font-size:13px;color:var(--ink-3);flex:0 0 auto;font-variant-numeric:tabular-nums;width:86px;text-align:right}
