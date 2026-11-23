@@ -720,3 +720,51 @@ def download(path: str) -> FileResponse:
     if not allowed:
         raise HTTPException(403, "不在允许下载的目录内")
     return FileResponse(p, filename=p.name)
+
+
+def _serve_output(raw: str) -> FileResponse:
+    """把「任务记录里登记过的产物」发出去。
+
+    为什么不复用 /api/download?path=：那个接口只认上传目录和书库根目录，
+    用户把输出目录设成 Compose 另外挂的 /Export 时，转换明明成功、
+    产物就在那儿，下载却 403。
+
+    把 /Export 整个加进允许根目录也能修，但那等于开个任意文件下载口。
+    这里换了个思路：路径不接受用户输入，只能来自服务端自己的任务/历史记录，
+    所以「能下载」== 「确实是自己转出来的东西」。
+    """
+    if not raw:
+        raise HTTPException(404, "这一项没有产物")
+    p = Path(raw)
+    try:
+        if not p.is_file():
+            raise HTTPException(404, "文件还没生成好或已被清理")
+    except OSError:
+        raise HTTPException(404, "文件读不出来")
+    return FileResponse(p, filename=p.name)
+
+
+@router.get("/jobs/{job_id}/download/{index}")
+def job_download(job_id: str, index: int) -> FileResponse:
+    """管理端按任务取产物，路径由任务记录决定，自定义输出目录也能下。"""
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在")
+    if index < 0 or index >= len(job.items):
+        raise HTTPException(404, "没有这一项")
+    it = job.items[index]
+    if it.status not in ("ok", "lossy"):
+        raise HTTPException(404, "这一项没有成功")
+    return _serve_output(it.out)
+
+
+@router.get("/history/{hid}/download")
+def history_download(hid: str) -> FileResponse:
+    """历史记录也要能下载 —— 任务对象重启就没了，只有历史还留着产物路径。"""
+    for h in store.load_history(limit=5000):
+        if h.get("id") != hid:
+            continue
+        if h.get("status") not in ("ok", "lossy"):
+            raise HTTPException(404, "这条记录没有产物")
+        return _serve_output(str(h.get("out", "")))
+    raise HTTPException(404, "记录不存在")

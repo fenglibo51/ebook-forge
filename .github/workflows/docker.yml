@@ -38,7 +38,16 @@ jobs:
             TAGGED="dev"
           fi
           echo "ver=${TAGGED}" >> "$GITHUB_OUTPUT"
-          echo "将要推送：${IMAGE}:${TAGGED} 和 :latest"
+          # latest 只跟着正式版本走。手动触发（ver=dev）不碰 latest ——
+          # 否则谁手动发一次开发镜像，所有「docker pull :latest」的用户
+          # 都会不知不觉拿到未发布的代码。
+          if [ "$TAGGED" = "dev" ]; then
+            echo "latest=" >> "$GITHUB_OUTPUT"
+            echo "将要推送：${IMAGE}:dev（不动 latest）"
+          else
+            echo "latest=${IMAGE}:latest" >> "$GITHUB_OUTPUT"
+            echo "将要推送：${IMAGE}:${TAGGED} 和 :latest"
+          fi
 
       - uses: docker/setup-buildx-action@v3
 
@@ -54,10 +63,12 @@ jobs:
         with:
           context: .
           push: true
-          # 两个 tag：具体版本方便回滚，latest 给「直接用」
+          # 两个 tag：具体版本方便回滚；latest 只在正式发布时给。
+          # dev 构建时 steps.meta.outputs.latest 是空串，build-push-action
+          # 会过滤空行，所以只推 :dev。
           tags: |
             ${{ env.IMAGE }}:${{ steps.meta.outputs.ver }}
-            ${{ env.IMAGE }}:latest
+            ${{ steps.meta.outputs.latest }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.meta.outputs.ver }}

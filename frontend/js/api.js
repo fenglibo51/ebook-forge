@@ -159,6 +159,15 @@ const API = (() => {
       if (SHARE) return '';        // 分享模式不给路径式下载
       return '/api/download?path=' + encodeURIComponent(path);
     },
+    // 按任务取产物：路径由服务端翻自己的任务记录，不再用用户传的路径。
+    // 这样输出目录设成 Compose 另外挂的 /Export 也能下，而不是 403。
+    jobDownloadUrl(jobId, index) {
+      return `/api/jobs/${encodeURIComponent(jobId)}/download/${index}`;
+    },
+    // 历史记录同理 —— 任务对象重启就没了，产物路径只有历史还留着
+    historyDownloadUrl(id) {
+      return `/api/history/${encodeURIComponent(id)}/download`;
+    },
     shareDownloadUrl(jobId, index) {
       return `/api/s/download/${jobId}/${index}?${SQ()}`;
     },

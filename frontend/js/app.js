@@ -307,8 +307,9 @@
       b.dataset.bound = '1';
       b.addEventListener('click', () => {
         const v = b.dataset.dl;
-        // 分享模式下这个值已经是完整的 /api/s/download/... 签名链接
-        window.location.href = v.startsWith('/api/s/') ? v : API.downloadUrl(v);
+        // 值已经是完整接口地址（/api/s/download/... 或 /api/jobs/{id}/download/{i}），
+        // 直接跳；只有老式的纯路径值才需要拼 /api/download?path=
+        window.location.href = v.startsWith('/api/') ? v : API.downloadUrl(v);
       });
     });
   }
@@ -365,7 +366,7 @@
         $('#progLog').innerHTML = s.items.map((it, idx) => {
           const done = ['ok', 'lossy'].includes(it.status);
           const dl = done
-            ? (API.isShared ? API.shareDownloadUrl(s.id, idx) : it.out)
+            ? (API.isShared ? API.shareDownloadUrl(s.id, idx) : API.jobDownloadUrl(s.id, idx))
             : '';
           return logRow(`${it.name} → ${s.target.toUpperCase()}`, it.status,
                         itemMeta(it), it.status === 'lossy', dl);
@@ -704,9 +705,10 @@
         if (!s) return;
         $('#libFill').style.width = (s.total ? s.done / s.total * 100 : 0) + '%';
         $('#libStats').textContent = `${s.done} / ${s.total}` + (s.elapsed ? ` · ${s.elapsed} 秒` : '');
-        $('#libLog').innerHTML = s.items.map(it =>
+        $('#libLog').innerHTML = s.items.map((it, idx) =>
           logRow(`${it.name} → ${s.target.toUpperCase()}`, it.status, itemMeta(it),
-                 it.status === 'lossy', it.out)
+                 it.status === 'lossy',
+                 ['ok', 'lossy'].includes(it.status) ? API.jobDownloadUrl(s.id, idx) : '')
         ).join('');
         bindDownloads($('#libLog'));
       });
@@ -752,7 +754,7 @@
         ? `<span style="color:var(--fail)">${esc(h.error || '失败')}</span>`
         : `${h.pages ? h.pages + ' 页 · ' : ''}${fmtSize(h.out_size)}`;
       const dl = h.out
-        ? `<button class="icon-btn" data-dl="${esc(h.out)}" title="下载"><svg viewBox="0 0 24 24"><path d="M12 4v12M12 16l-4-4M12 16l4-4M4 20h16"/></svg></button>`
+        ? `<button class="icon-btn" data-dl="${esc(API.historyDownloadUrl(h.id))}" title="下载"><svg viewBox="0 0 24 24"><path d="M12 4v12M12 16l-4-4M12 16l4-4M4 20h16"/></svg></button>`
         : `<button class="icon-btn" data-retry="${esc(h.id)}" title="重试"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 10-2.3 5.7M20 5v6h-6"/></svg></button>`;
       return `<tr>
         <td><span class="st ${cls}">${ico}</span></td>
@@ -765,7 +767,7 @@
     }).join('');
 
     $$('#histBody [data-dl]').forEach(b => b.addEventListener('click', () => {
-      window.location.href = API.downloadUrl(b.dataset.dl);
+      window.location.href = b.dataset.dl;      // 已经是完整的历史下载接口地址
     }));
     $$('#histBody [data-retry]').forEach(b => b.addEventListener('click', async () => {
       const h = histItems.find(x => x.id === b.dataset.retry);

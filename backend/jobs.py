@@ -182,7 +182,6 @@ def _run(job: Job) -> None:
                 font=str(job.options.get("font_path", "")),
                 src_name=item.name,     # 原始文件名，别让随机 file_id 变成书名
             )
-            item.ok = True
             item.mode = r.get("mode", "")
             item.note = r.get("note", "")
             item.pages = r.get("pages", 0)
@@ -195,8 +194,18 @@ def _run(job: Job) -> None:
             # 结果落在上传缓存目录时，登记进索引：
             # 否则 purge_orphans 会把它当孤儿删掉（不到 24 小时保留期就没了），
             # 而且这部分磁盘占用也算不进配额。
+            #
+            # 登记失败（含超出缓存配额）必须连带删掉产物并改判失败 ——
+            # 之前只 log 一条 warning 就继续报成功，结果是「页面显示成功、
+            # 一小时后文件被当孤儿清理、配额里也没这笔账」三头不一致。
+            # item.ok 故意放在登记之后设：登记失败就走下面的 except 分支。
             if item.out:
-                _track_output(Path(item.out), item.out_size, job)
+                try:
+                    _track_output(Path(item.out), item.out_size, job)
+                except Exception as e:
+                    _drop_output(item)
+                    raise RuntimeError(str(e) or e.__class__.__name__) from e
+            item.ok = True
 
             # 删源文件：只在转换成功后做，失败绝不动源文件
             if job.options.get("delete_source"):
@@ -247,20 +256,26 @@ def _run(job: Job) -> None:
         item.elapsed = time.time() - t0
         job.done += 1
 
-        store.append_history({
-            "status": item.status,
-            "src_name": item.name,
-            "src_path": item.src,
-            "src_size": item.size,
-            "target": job.target,
-            "out": item.out,
-            "out_size": item.out_size,
-            "pages": item.pages,
-            "mode": item.mode,
-            "note": item.note,
-            "error": item.error,
-            "elapsed": round(item.elapsed, 2),
-        })
+        # 历史只是一份存档，写不进去不能把整个任务搞成永远 running。
+        # 实测：数据目录只读时 append_history 抛异常，job.status 再没被设成 done，
+        # 前端就一直转圈。这里兜住，最坏情况只是这条记录没进历史。
+        try:
+            store.append_history({
+                "status": item.status,
+                "src_name": item.name,
+                "src_path": item.src,
+                "src_size": item.size,
+                "target": job.target,
+                "out": item.out,
+                "out_size": item.out_size,
+                "pages": item.pages,
+                "mode": item.mode,
+                "note": item.note,
+                "error": item.error,
+                "elapsed": round(item.elapsed, 2),
+            })
+        except Exception as e:
+            logging.getLogger(__name__).warning("写历史记录失败：%s", e)
 
     job.finished = time.time()
     job.status = "done"
@@ -282,11 +297,32 @@ def _track_output(path: Path, size: int, job: "Job") -> None:
         cache_dir = (store.DATA_DIR / "uploads").resolve()
         if path.resolve().parent != cache_dir:
             return
-        uploads.register_output(path, size, token=job.share_token,
-                                sid=job.session_id, job_id=job.id)
-    except Exception as e:                     # 登记失败不该让转换结果作废
-        logging.getLogger(__name__).warning(
-            "登记转换结果失败（不影响本次转换）：%s", e)
+    except OSError:
+        return
+    # 这里不再吞异常：登记不上（配额满、uploads.json 写不进去）就把异常抛回去，
+    # 由调用方丢掉产物并把这个文件判失败。吞掉的后果是「报成功但文件没有归属」。
+    uploads.register_output(path, size, token=job.share_token,
+                            sid=job.session_id, job_id=job.id)
+
+
+def _drop_output(item: "JobItem") -> None:
+    """登记失败时丢弃本次产物，并把任务项清成「没有产物」。
+
+    为什么必须删：文件留在 uploads/ 里但索引里没有，一小时后
+    purge_orphans 会把它当孤儿清掉。与其给用户一个明天就消失的下载链接，
+    不如当场说清楚 —— 也免得配额里漏掉这笔占用。
+    只动本次产物，源文件和其他任务的结果一律不碰。
+    """
+    raw = item.out
+    item.out = ""
+    item.out_size = 0
+    item.pages = 0
+    if not raw:
+        return
+    try:
+        Path(raw).unlink()
+    except OSError:
+        pass
 
 
 def _out_path(src: Path, target: str, name: str, output_dir: str = "") -> Path:

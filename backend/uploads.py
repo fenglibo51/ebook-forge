@@ -157,8 +157,38 @@ def register(path: Path, display_name: str, size: int, *,
     return fid
 
 
+def _check_output_room(size: int, token: str, sid: str) -> None:
+    """转换产物落盘后的准入判断。调用方必须已持有 _lock。
+
+    为什么转换也要判额度：上传走 Ticket.admit() 逐块准入，但产物是先写盘、
+    再 register_output() 直接记账 —— 中间没有闸门。实测把总配额压到 1MB，
+    上传 684KB 文本转出 1.9MB PDF，2.54MB 全进了索引，没人拦。
+    小文本反复转大 PDF 就能把缓存撑爆。
+    """
+    if size <= 0:
+        return
+    used_total = _live["total"] + max(0, _inflight["total"])
+    if used_total + size > QUOTA_TOTAL_BYTES:
+        raise QuotaError(
+            f"缓存目录放不下这次的转换结果：已用 {_fmt(used_total)}，"
+            f"结果 {_fmt(size)}，上限 {_fmt(QUOTA_TOTAL_BYTES)}。"
+            "旧文件 24 小时后自动清理，也可以在设置页手动清")
+    if token:
+        used = _live["tok"].get(token, 0) + max(0, _inflight_token.get(token, 0))
+        if used + size > QUOTA_TOKEN_BYTES:
+            raise QuotaError(
+                f"这条分享链接的额度放不下这次的转换结果：已用 {_fmt(used)}，"
+                f"结果 {_fmt(size)}，上限 {_fmt(QUOTA_TOKEN_BYTES)}")
+    if sid:
+        used = _live["sid"].get(sid, 0) + max(0, _inflight_sid.get(sid, 0))
+        if used + size > QUOTA_SID_BYTES:
+            raise QuotaError(
+                f"当前会话的额度放不下这次的转换结果：已用 {_fmt(used)}，"
+                f"结果 {_fmt(size)}，上限 {_fmt(QUOTA_SID_BYTES)}")
+
+
 def register_output(path: Path, size: int, *, token: str = "", sid: str = "",
-                    job_id: str = "") -> str:
+                    job_id: str = "", enforce: bool = True) -> str:
     """把转换结果登记进索引。
 
     为什么不登记会出事：结果 PDF 就放在 uploads/ 里，而 purge_orphans()
@@ -171,6 +201,9 @@ def register_output(path: Path, size: int, *, token: str = "", sid: str = "",
     """
     fid = "out_" + new_file_id()
     with _lock:
+        if enforce:
+            _live_sync()
+            _check_output_room(size, token, sid)
         data = _load()
         rec = {
             "path": str(path),

@@ -162,8 +162,10 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(u["files"], 1, "缓存里的转换结果没登记")
         self.assertEqual(u["by_token"].get("tok-Z"), out.stat().st_size)
 
-    # ⑧ 登记失败不能影响转换本身
-    def test_track_output_failure_is_swallowed(self):
+    # ⑧ 登记失败必须抛出去 —— 语义在 94de76f 复审后反过来了。
+    # 早先是「吞掉，转换照样算成功」，后果是页面显示成功、一小时后产物
+    # 被 purge_orphans 当孤儿删、配额里也没这笔账。
+    def test_track_output_failure_propagates(self):
         from backend import jobs
         job = mock.Mock()
         job.share_token = ""
@@ -174,8 +176,48 @@ class LifecycleTests(unittest.TestCase):
         out = data / "uploads" / "x.pdf"
         out.write_bytes(b"%PDF")
         with mock.patch.object(store, "DATA_DIR", data), \
-             mock.patch.object(uploads, "register_output", side_effect=OSError("disk full")):
-            jobs._track_output(out, 4, job)      # 不该抛
+             mock.patch.object(uploads, "register_output",
+                               side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                jobs._track_output(out, 4, job)
+
+    # ⑨ 但书库里的产物（不在缓存目录）本来就不用登记，不该抛
+    def test_track_output_skips_library_files(self):
+        from backend import jobs
+        job = mock.Mock()
+        job.share_token = ""
+        job.session_id = ""
+        job.id = "j-y"
+        data = self.tmp / "data4"
+        (data / "uploads").mkdir(parents=True)
+        lib = self.tmp / "library.pdf"
+        lib.write_bytes(b"%PDF")
+        with mock.patch.object(store, "DATA_DIR", data), \
+             mock.patch.object(uploads, "register_output",
+                               side_effect=OSError("不该被调用")):
+            jobs._track_output(lib, 4, job)      # 不抛，因为压根不走登记
+
+    # ⑩ 丢弃产物：文件删掉、任务项清干净，源文件不碰
+    def test_drop_output_removes_only_the_product(self):
+        from backend import jobs
+        job_dir = self.tmp / "uploads2"
+        job_dir.mkdir()
+        src = job_dir / "src.txt"
+        src.write_bytes(b"source")
+        out = job_dir / "out.pdf"
+        out.write_bytes(b"%PDF-1.4")
+
+        item = jobs.JobItem(src=str(src), name="x.txt", size=6)
+        item.out = str(out)
+        item.out_size = 8
+        item.pages = 1
+        jobs._drop_output(item)
+
+        self.assertFalse(out.exists(), "产物应该被删掉")
+        self.assertTrue(src.exists(), "源文件不能被牵连")
+        self.assertEqual(item.out, "")
+        self.assertEqual(item.out_size, 0)
+        self.assertEqual(item.pages, 0)
 
 
 if __name__ == "__main__":

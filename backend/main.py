@@ -70,8 +70,107 @@ async def lifespan(_app: FastAPI):
                 pass
 
 
-app = FastAPI(title="EbookForge", version="1.0.1", docs_url="/api/docs",
+app = FastAPI(title="EbookForge", version="1.0.2", docs_url="/api/docs",
               lifespan=lifespan)
+
+
+# ── 请求体硬上限 ──────────────────────────────────────────────────────────
+# 为什么要有这一层：FastAPI 的 UploadFile 是 multipart 解析完才拿到的对象，
+# Starlette 会把超过 1MB 的 part 落到 SpooledTemporaryFile。也就是说
+# 「逐块读、逐块判额度」全都发生在磁盘已经被占之后 —— 反代没配 body 上限时，
+# 一个几十 GB 的 POST 能把临时盘写满，应用层的配额检查根本来不及出场。
+#
+# 上限取「单次上传总量」再多留 64MB，给 multipart 边界和协议开销。
+
+class BodyLimitMiddleware:
+    """两层拦：有 Content-Length 直接比；chunked 或客户端撒谎就边收边数。
+
+    ⚠️ 超限时**不能从 receive() 抛异常**。实测过：FastAPI 的 routing.py
+    把 body 解析阶段的任何非 HTTPException 一律转成
+    `400 There was an error parsing the body`，状态码就不对了；而抛
+    HTTPException 也没用 —— 这个中间件挂在 ExceptionMiddleware 外层，
+    抛出去会变成 500。所以在 send 层把响应改写成 413。
+    """
+
+    def __init__(self, app, limit: int) -> None:
+        self.app = app
+        self.limit = limit
+
+    def _payload(self) -> bytes:
+        return ('{"detail":"请求体太大，上限 %d MB"}' % (self.limit >> 20)).encode()
+
+    async def _reject(self, send) -> None:
+        body = self._payload()
+        await send({"type": "http.response.start", "status": 413,
+                    "headers": [(b"content-type", b"application/json; charset=utf-8"),
+                                (b"content-length", str(len(body)).encode()),
+                                (b"connection", b"close")]})
+        await send({"type": "http.response.body", "body": body})
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        declared: int | None = None
+        for k, v in scope.get("headers") or ():
+            if k.lower() == b"content-length":
+                try:
+                    declared = int(v)
+                except (TypeError, ValueError):
+                    declared = None
+        # ① 声明就超标：一个字节的 body 都不收，直接回 413
+        if declared is not None and declared > self.limit:
+            return await self._reject(send)
+
+        received = 0
+        too_large = False
+        replied = False
+
+        async def _receive():
+            nonlocal received, too_large, replied
+            msg = await receive()
+            if msg["type"] == "http.request":
+                received += len(msg.get("body") or b"")
+                if received > self.limit:
+                    too_large = True
+                    if not replied:
+                        # 直接用原始 send 把 413 发出去，不等框架 ——
+                        # 框架收到 disconnect 会自己抛 400，那就抢不到状态码了。
+                        replied = True
+                        await self._reject(send)
+                    # 告诉框架「对端没了」，它就会停手不再读 body
+                    return {"type": "http.disconnect"}
+            return msg
+
+        async def _send(msg):
+            nonlocal replied
+            if not too_large:
+                return await send(msg)
+            # 超限：把框架原本要发的响应整个换掉，只发一次 413
+            if replied:
+                return
+            replied = True
+            if msg["type"] == "http.response.start":
+                await self._reject(send)
+            elif msg["type"] == "http.response.body":
+                await self._reject(send)
+
+        try:
+            await self.app(scope, _receive, _send)
+        except Exception:
+            if not too_large:
+                raise
+            # 超限后下游多半因为 disconnect 抛异常（Starlette 抛
+            # ClientDisconnect，FastAPI 转 400）。413 已经发出去了，
+            # 再让它变成 500 没意义 —— 这里吞掉。
+        # ② 框架因为 disconnect 什么都没发，我们补上 413
+        if too_large and not replied:
+            await self._reject(send)
+
+# 上限取「单次上传总量」再多留 64MB，给 multipart 边界和协议开销。
+# 注册放在文件末尾（admin_guard 之后）—— Starlette 后加的中间件在最外层，
+# 我们需要它比 admin_guard 更外，否则框架自己抛的 400 会先占住响应。
+_BODY_LIMIT_MB = int(os.environ.get("EBOOKFORGE_MAX_UPLOAD_MB", "8192")) + 64
 
 
 # ── 管理令牌 ──────────────────────────────────────────────────────────────
@@ -184,6 +283,10 @@ if FRONTEND.exists():
 def main() -> None:
     import uvicorn
     uvicorn.run("backend.main:app", host="0.0.0.0", port=8506, reload=False)
+
+
+# 最后注册 → 最外层。见上面 BodyLimitMiddleware 的说明。
+app.add_middleware(BodyLimitMiddleware, limit=_BODY_LIMIT_MB * 1024 * 1024)
 
 
 if __name__ == "__main__":
