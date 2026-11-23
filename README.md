@@ -94,16 +94,45 @@ docker compose up -d --build
 
 打开 `http://<你的地址>:8505` 就能用。
 
-**唯一要改的是书库路径**，在 `docker-compose.yml` 里：
+**唯一要改的是书库路径。** 仓库里的 `docker-compose.yml` 就是下面这份：
 
 ```yaml
-volumes:
-  - /volume1/Book:/Book:rw      # ← 改成你的书库路径
+services:
+  ebook-forge:
+    build: .
+    image: ebook-forge:latest
+    container_name: ebook-forge
+    restart: unless-stopped
+
+    ports:
+      - "8505:8506"          # 左=NAS 端口（反代指它）右=容器内，别动右边
+
+    volumes:
+      - /volume1/Book:/Book:rw    # ← 改成你的书库路径，必须 rw
+      - ./data:/data              # 记录/设置/上传副本
+
+    environment:
+      EBOOKFORGE_DATA: /data
+      TZ: Asia/Shanghai
+      BOOKFORGE_RENDER_DPI: "200"          # 150 / 200 / 300，界面里也能改
+      BOOKFORGE_RENDER_FALLBACK: "true"    # false = 关掉渲染兜底，这类 PDF 直接报错
+      EBOOKFORGE_UPLOAD_TTL: "86400"       # 上传副本保留 24 小时
+
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8506/api/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
 ```
 
-> 必须是 `rw`（可写）—— 转换结果默认写回源文件所在的目录。
+> ⚠️ `:/Book` 后面必须是 `rw`（可写）—— 转换结果默认写回源文件所在的目录，只读会失败。
 
-`docker-compose.yml` 里每一项都有注释，包括时区、渲染精度、上传副本保留时间、资源限制。
+不想用 git clone 也行，把上面这份存成 `docker-compose.yml`，
+再把仓库里的 `Dockerfile`、`bookforge/`、`backend/`、`frontend/`、`assets/`、`requirements.txt` 和它放同一层，
+`docker compose up -d --build` 一样能起来。
+
+仓库里那份比上面多点注释，还留了资源限制的配置（默认注掉）。
 
 ### 不用 Docker
 
