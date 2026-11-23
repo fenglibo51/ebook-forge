@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import traceback
@@ -284,7 +285,8 @@ def _track_output(path: Path, size: int, job: "Job") -> None:
         uploads.register_output(path, size, token=job.share_token,
                                 sid=job.session_id, job_id=job.id)
     except Exception as e:                     # 登记失败不该让转换结果作废
-        print(f"[jobs] 登记转换结果失败（不影响本次转换）：{e}")
+        logging.getLogger(__name__).warning(
+            "登记转换结果失败（不影响本次转换）：%s", e)
 
 
 def _out_path(src: Path, target: str, name: str, output_dir: str = "") -> Path:
