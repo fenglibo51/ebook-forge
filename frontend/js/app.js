@@ -32,13 +32,50 @@
     }
     const el = document.createElement('div');
     const color = kind === 'fail' ? 'var(--fail)' : kind === 'warn' ? 'var(--warn)' : 'var(--ink)';
-    el.style.cssText = `background:#fff;border:1px solid var(--line);border-left:3px solid ${color};
-      border-radius:10px;padding:11px 16px;font-size:13.5px;box-shadow:0 4px 16px rgba(0,0,0,.06);
-      max-width:420px;line-height:1.5`;
+    el.style.cssText = `background:var(--toast-bg);border:1px solid var(--line);border-left:3px solid ${color};
+      border-radius:10px;padding:11px 16px;font-size:13.5px;box-shadow:var(--shadow);
+      max-width:420px;line-height:1.5;color:var(--ink)`;
     el.textContent = msg;
     host.appendChild(el);
     setTimeout(() => el.remove(), kind === 'fail' ? 7000 : 3800);
   };
+
+  /* ================= 主题（深色 / 浅色） ================= */
+  const THEME_KEY = 'ebookforge:theme';
+  const ICON_MOON = 'M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z';
+  const ICON_SUN = 'M12 4V2M12 22v-2M4 12H2M22 12h-2M5.6 5.6L4.2 4.2M19.8 19.8l-1.4-1.4M18.4 5.6l1.4-1.4M6.6 17.4l-1.4 1.4';
+
+  function applyTheme(dark) {
+    document.documentElement.dataset.theme = dark ? 'dark' : '';
+    const icon = $('#themeIcon'), label = $('#themeLabel'), btn = $('#themeToggle');
+    if (!icon || !label) return;
+    // 按钮上写的是「点一下会变成什么」，不是当前状态
+    icon.innerHTML = dark
+      ? `<circle cx="12" cy="12" r="4"/><path d="${ICON_SUN}"/>`
+      : `<path d="${ICON_MOON}"/>`;
+    label.textContent = dark ? '浅色模式' : '深色模式';
+    btn.title = dark ? '切到浅色' : '切到深色';
+  }
+
+  (function initTheme() {
+    const saved = localStorage.getItem(THEME_KEY);
+    if (saved === 'dark' || saved === 'light') {
+      applyTheme(saved === 'dark');
+    } else {
+      // 没手动选过就跟随系统
+      applyTheme(window.matchMedia('(prefers-color-scheme: dark)').matches);
+    }
+    const btn = $('#themeToggle');
+    if (btn) btn.addEventListener('click', () => {
+      const dark = document.documentElement.dataset.theme !== 'dark';
+      applyTheme(dark);
+      localStorage.setItem(THEME_KEY, dark ? 'dark' : 'light');
+    });
+    // 用户没手动选过时，系统主题变了也跟着变
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+      if (!localStorage.getItem(THEME_KEY)) applyTheme(e.matches);
+    });
+  })();
 
   /* ================= 侧边栏 ================= */
   const sb = $('#sidebar'), tg = $('#toggle'), SB_KEY = 'ebookforge:sidebar-collapsed';

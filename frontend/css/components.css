@@ -17,8 +17,8 @@
   white-space:nowrap;
 }
 .btn:active{transform:translateY(1px)}
-.btn-primary{background:var(--ink);color:#fff}
-.btn-primary:hover{background:#262626}
+.btn-primary{background:var(--ink);color:var(--on-ink)}
+.btn-primary:hover{filter:brightness(1.12)}
 .btn-primary:disabled{background:var(--ink-4);cursor:not-allowed;transform:none}
 .btn-primary svg{width:16px;height:16px}
 .btn-ghost{border:1px solid var(--line);border-radius:var(--r-sm);padding:8px 14px;font-size:13.5px;color:var(--ink-2);background:var(--surface)}
@@ -59,7 +59,7 @@ select.input{cursor:pointer;padding-right:28px;appearance:none;
 .st.run{color:var(--ink-2);background:var(--hover)}
 
 /* ============ 进度 ============ */
-.track{height:6px;background:#EDEDEA;border-radius:var(--r-pill);overflow:hidden}
+.track{height:6px;background:var(--track);border-radius:var(--r-pill);overflow:hidden}
 .fill{height:100%;background:var(--ink);border-radius:var(--r-pill);transition:width .3s ease}
 .prog-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px}
 .prog-head h3{margin:0}
@@ -86,7 +86,7 @@ select.input{cursor:pointer;padding-right:28px;appearance:none;
 .warnbar{
   display:flex;gap:10px;align-items:flex-start;margin-top:14px;padding:12px 15px;
   border-radius:var(--r-md);background:var(--warn-bg);border:1px solid var(--warn-line);
-  font-size:13px;color:#7A4A18;line-height:1.5;
+  font-size:13px;color:var(--warn-text);line-height:1.5;
 }
 .warnbar svg{width:15px;height:15px;flex:0 0 15px;margin-top:2px;color:var(--warn)}
 .warnbar b{font-weight:600}
@@ -131,7 +131,7 @@ td .cellfile .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-w
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden}
 .seg button{padding:7px 16px;font-size:13.5px;color:var(--ink-2);background:var(--surface);border-right:1px solid var(--line)}
 .seg button:last-child{border-right:none}
-.seg button.on{background:var(--ink);color:#fff}
+.seg button.on{background:var(--ink);color:var(--on-ink)}
 .seg button:not(.on):hover{background:var(--hover);color:var(--ink)}
 @media (max-width:760px){
   .field{flex-direction:column;gap:8px}

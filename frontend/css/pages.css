@@ -47,7 +47,7 @@
   transition:all var(--t);
 }
 .fmt:hover:not(:disabled){border-color:var(--ink-3);color:var(--ink)}
-.fmt.on{background:var(--ink);border-color:var(--ink);color:#fff}
+.fmt.on{background:var(--ink);border-color:var(--ink);color:var(--on-ink)}
 .fmt:disabled{color:var(--ink-4);background:var(--surface-2);cursor:not-allowed;text-decoration:line-through;text-decoration-color:var(--line-soft)}
 .fmt-note{font-size:13px;color:var(--ink-3);margin-top:10px;min-height:20px}
 .queue-head{display:flex;align-items:center;justify-content:space-between;margin:22px 0 10px}
@@ -68,21 +68,21 @@
 .batch-bar{
   display:none;align-items:center;gap:14px;flex-wrap:wrap;
   padding:11px 16px;border-radius:var(--r-md);
-  background:var(--ink);color:#fff;font-size:13.5px;margin-bottom:14px;
+  background:var(--batch-bg);color:var(--batch-fg);font-size:13.5px;margin-bottom:14px;
 }
 .batch-bar.show{display:flex}
 .batch-bar .cnt b{font-weight:600}
 .batch-bar .grow{flex:1}
 .batch-bar select.input-sm{
-  background:rgba(255,255,255,.10);border-color:rgba(255,255,255,.18);color:#fff;
+  background:var(--batch-soft);border-color:var(--batch-line);color:var(--batch-fg);
 }
-.batch-bar select.input-sm option{color:var(--ink)}
-.batch-bar .check{color:rgba(255,255,255,.85)}
-.batch-bar .check input{accent-color:#fff}
-.batch-bar .btn-sm{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.20);color:#fff}
-.batch-bar .btn-sm:hover{background:rgba(255,255,255,.20);border-color:rgba(255,255,255,.34);color:#fff}
-.batch-bar .btn-sm.solid{background:#fff;color:var(--ink);border-color:#fff}
-.batch-bar .btn-sm.solid:hover{background:rgba(255,255,255,.88);color:var(--ink)}
+.batch-bar select.input-sm option{color:var(--ink);background:var(--surface)}
+.batch-bar .check{color:var(--batch-fg);opacity:.85}
+.batch-bar .check input{accent-color:var(--batch-fg)}
+.batch-bar .btn-sm{background:var(--batch-soft);border-color:var(--batch-line);color:var(--batch-fg)}
+.batch-bar .btn-sm:hover{background:var(--invert-hover);border-color:var(--batch-line);color:var(--batch-fg)}
+.batch-bar .btn-sm.solid{background:var(--batch-solid-bg);color:var(--batch-solid-fg);border-color:var(--batch-solid-bg)}
+.batch-bar .btn-sm.solid:hover{filter:brightness(.92)}
 
 .flist{display:flex;flex-direction:column}
 .frow{
