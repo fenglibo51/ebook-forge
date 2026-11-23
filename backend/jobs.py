@@ -50,6 +50,8 @@ class Job:
     # 分享链接进来的任务记归属，防止拿到链接的人查/下别人的产物
     share_token: str = ""
     session_id: str = ""
+    # 取消标记：置位后「当前文件跑完就不再启动后面的」
+    cancel_requested: bool = False
     done: int = 0
     started: float = 0.0
     finished: float = 0.0
@@ -68,6 +70,7 @@ class Job:
             "target": self.target,
             "total": self.total,
             "done": self.done,
+            "canceled": self.cancel_requested,
             "elapsed": round(elapsed, 1),
             "items": [
                 {
@@ -113,6 +116,31 @@ def get(job_id: str) -> Job | None:
     return _jobs.get(job_id)
 
 
+def cancel(job_id: str) -> dict[str, Any]:
+    """请求取消。
+
+    排队中的任务立刻结束（一个字节都不会写盘）；
+    正在跑的等当前文件转完就停。
+    """
+    job = _jobs.get(job_id)
+    if not job:
+        return {"ok": False, "reason": "任务不存在"}
+    if job.status == "done":
+        return {"ok": False, "reason": "任务已经结束了"}
+
+    with _lock:
+        job.cancel_requested = True
+        if job.status == "pending":
+            # 还没轮到它，直接标记完成，跳过所有文件
+            for it in job.items:
+                it.status = "canceled"
+                it.error = "任务已取消"
+            job.done = job.total
+            job.status = "done"
+            job.finished = time.time()
+    return {"ok": True, "status": job.status, "done": job.done, "total": job.total}
+
+
 def pending_count() -> int:
     """排队 + 正在跑的任务数，用来限制队列长度。"""
     with _lock:
@@ -132,6 +160,14 @@ def _run(job: Job) -> None:
     to_comic.RENDER_DPI = int(job.options.get("render_dpi", 200))
 
     for item in job.items:
+        # 取消只跳过「还没开始」的文件。
+        # 不打断正在跑的那个 —— convert() 是同步一次性调用，强杀会留下半截文件，
+        # 比不取消更糟。所以当前文件跑完，后面的不再启动。
+        if job.cancel_requested:
+            item.status = "canceled"
+            item.error = "任务已取消"
+            job.done += 1
+            continue
         item.status = "running"
         t0 = time.time()
         try:

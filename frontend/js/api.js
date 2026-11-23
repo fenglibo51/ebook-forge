@@ -106,6 +106,11 @@ const API = (() => {
       return postJSON(url, { files, target, options });
     },
 
+    cancelJob(id) {
+      const url = SHARE ? `/api/s/jobs/${id}/cancel?${SQ()}` : `/api/jobs/${id}/cancel`;
+      return postJSON(url, {});
+    },
+
     job(id) {
       const url = SHARE ? `/api/s/jobs/${id}?${SQ()}` : '/api/jobs/' + id;
       return get(url);

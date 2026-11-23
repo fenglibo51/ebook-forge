@@ -358,6 +358,17 @@ def get_job(job_id: str) -> dict[str, Any]:
     return job.to_dict()
 
 
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str) -> dict[str, Any]:
+    """取消任务。
+
+    排队中的立刻结束（不写盘）；正在跑的等当前文件转完就停，
+    不会打断正在写的那个文件（强杀会留半截文件）。
+    已完成的不删、源文件不动。
+    """
+    return jobs.cancel(job_id)
+
+
 # ── 历史 ──────────────────────────────────────────────────────────────────
 
 @router.get("/history")
@@ -541,6 +552,16 @@ def share_get_job(job_id: str, t: str = Query(...), sid: str = Query(...)) -> di
     for it in data["items"]:
         it.pop("out", None)
     return data
+
+
+@router.post("/s/jobs/{job_id}/cancel")
+def share_cancel(job_id: str, t: str = Query(...), sid: str = Query(...)) -> dict[str, Any]:
+    """分享链接也要能取消自己那个任务。"""
+    _share_ctx(t)
+    job = jobs.get(job_id)
+    if not job or job.share_token != t or job.session_id != sid:
+        raise HTTPException(404, "任务不存在")
+    return jobs.cancel(job_id)
 
 
 @router.get("/s/download/{job_id}/{index}")

@@ -145,6 +145,7 @@
   let queue = [];            // [{path,name,size}]
   let target = 'pdf';
   let jobId = null;
+  let runningJobId = null;
 
   const fmtBtns = $$('#fmts .fmt');
   const fmtNote = $('#fmtNote');
@@ -282,7 +283,8 @@
     }
   }
 
-  const ST_ICON = { ok: ['ok', '✓'], lossy: ['warn', '!'], fail: ['fail', '✕'], running: ['run', '⋯'], pending: ['run', '·'] };
+  const ST_ICON = { ok: ['ok', '✓'], lossy: ['warn', '!'], fail: ['fail', '✕'],
+                  running: ['run', '⋯'], pending: ['run', '·'], canceled: ['run', '⊘'] };
 
   function logRow(name, status, meta, metaWarn, out) {
     const [cls, ico] = ST_ICON[status] || ST_ICON.pending;
@@ -315,6 +317,7 @@
     if (it.status === 'fail') return it.error || '失败';
     if (it.status === 'running') return '转换中…';
     if (it.status === 'pending') return '排队中';
+    if (it.status === 'canceled') return '已取消';
     const bits = [];
     if (it.pages) bits.push(it.pages + ' 页');
     if (it.out_size) bits.push(fmtSize(it.out_size));
@@ -345,8 +348,12 @@
       });
       const r = await API.createJob(queue, target, opts);
       jobId = r.job_id;
+      runningJobId = r.job_id;
       updateGoState();
       $('#progressCard').style.display = '';
+      $('#btnCancelJob').style.display = '';
+      $('#btnCancelJob').disabled = false;
+      $('#btnCancelJob').textContent = '取消';
       $('#progLog').innerHTML = '';
       $('#progSum').innerHTML = '';
       $('#progFill').style.width = '0%';
@@ -370,9 +377,33 @@
       toast('建任务失败：' + (e.message || e), 'fail');
     } finally {
       jobId = null;
+      runningJobId = null;
+      const cb = $('#btnCancelJob');
+      if (cb) cb.style.display = 'none';
       updateGoState();
     }
   });
+
+  if ($('#btnCancelJob')) {
+    $('#btnCancelJob').addEventListener('click', async () => {
+      if (!runningJobId) return;
+      const ok = confirm(
+        '取消这个任务？\n\n· 正在转的那个文件会先把当前这个跑完（不会留半截文件）\n' +
+        '· 后面的文件直接跳过\n· 已经转好的文件保留，不会删\n· 源文件不动'
+      );
+      if (!ok) return;
+      try {
+        $('#btnCancelJob').disabled = true;
+        $('#btnCancelJob').textContent = '取消中…';
+        await API.cancelJob(runningJobId);
+        toast('已请求取消，当前文件跑完就停');
+      } catch (e) {
+        $('#btnCancelJob').disabled = false;
+        $('#btnCancelJob').textContent = '取消';
+        toast('取消失败：' + (e.message || e), 'fail');
+      }
+    });
+  }
 
   function finishJob(st, where) {
     const ok = st.items.filter(i => i.status === 'ok').length;

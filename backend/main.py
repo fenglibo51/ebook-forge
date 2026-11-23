@@ -42,7 +42,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="EbookForge", version="0.1.0", docs_url="/api/docs",
+app = FastAPI(title="EbookForge", version="1.0.0", docs_url="/api/docs",
               lifespan=lifespan)
 
 
