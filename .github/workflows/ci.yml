@@ -19,11 +19,11 @@ jobs:
 
       # 引擎（bookforge/）零依赖，只用标准库。
       # 但 tests/ 里还有 Web 层的测试（分享模式越权、PWA 契约），
-      # 它们要 import backend.main → 需要 fastapi / python-multipart。
-      # 少这一句，test_share_security 会整个 import 失败，而报错信息是
-      # 「ModuleNotFoundError: No module named 'fastapi'」，看起来像代码坏了。
-      - name: 装 Web 层依赖
-        run: pip install -r requirements.txt
+      # 它们要 import backend.main → 需要 fastapi / python-multipart；
+      # 还要 TestClient → 需要 httpx2（见 requirements-dev.txt）。
+      # 少这一句，test_share_security 会整个 import 失败，报错看着像代码坏了。
+      - name: 装依赖（运行 + 测试）
+        run: pip install -r requirements.txt -r requirements-dev.txt
 
       # 字体在仓库里（assets/fonts），P4/P5 那批排版测试因此不会被跳过。
       # CFF 样本也在仓库里（tests/fixtures/minimal-cff.otf，312 字节），P8 同样不会被跳过。

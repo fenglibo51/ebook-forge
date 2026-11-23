@@ -1,0 +1,11 @@
+# 只给测试用的依赖 —— 不进生产镜像（.dockerignore 里 tests/ 本来也不进）
+#
+# 为什么单列一个文件：生产镜像只要 fastapi + uvicorn + python-multipart，
+# 测试才需要 TestClient（走 httpx）。混进 requirements.txt 会让镜像白白变大。
+#
+# httpx2 是什么：httpx 移交 pydantic 维护后，PyPI 上的新包名就是 httpx2，
+# API 和 httpx 基本一致。starlette >= 1.10 的 TestClient 优先 import 它，
+# 找不到才退回旧的 httpx（能用但会打 DeprecationWarning）。
+# 不锁死版本：它只是测试用的 HTTP 客户端，跟运行时行为无关，
+# 锁了反而每次都要手动跟进。生产依赖在 requirements.txt 里，那些才锁死。
+httpx2
