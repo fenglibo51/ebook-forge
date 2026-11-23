@@ -276,13 +276,15 @@
     return bits.join(' · ');
   }
 
-  const optFor = () => {
+  const optFor = (extra = {}) => {
     const s = settingsCache || {};
     return {
       page_size: s.page_size || 'a5',
       render_dpi: s.render_dpi || 200,
       render_fallback: s.render_fallback !== false,
-      font_path: s.font_path || ''
+      font_path: s.font_path || '',
+      output_dir: s.output_dir || '',
+      ...extra
     };
   };
 
@@ -456,8 +458,16 @@
     if (!files.length) return toast('先勾选文件', 'warn');
     if (!tgt) return toast('先选目标格式', 'warn');
     if (libJobId) return;
+    const delSrc = $('#delSource').checked;
+    if (delSrc) {
+      const ok = confirm(
+        `确定要在转换成功后删除这 ${files.length} 个源文件？\n\n` +
+        `删了就找不回来。转换失败的文件不会被删。`
+      );
+      if (!ok) return;
+    }
     try {
-      const r = await API.createJob(files, tgt, optFor());
+      const r = await API.createJob(files, tgt, optFor({ delete_source: delSrc }));
       libJobId = r.job_id;
       $('#libProgress').style.display = '';
       $('#libLog').innerHTML = '';
@@ -578,6 +588,7 @@
     $('#renderFallback').checked = s.render_fallback !== false;
     $('#fontPath').value = s.font_path || '';
     $('#libRoot').value = s.library_root || '';
+    $('#outputDir').value = s.output_dir || '';
   }
 
   async function savePatch(patch) {
@@ -602,6 +613,7 @@
   $('#renderFallback').addEventListener('change', e => savePatch({ render_fallback: e.target.checked }));
   $('#fontPath').addEventListener('change', e => savePatch({ font_path: e.target.value.trim() }));
   $('#libRoot').addEventListener('change', e => savePatch({ library_root: e.target.value.trim() }));
+  $('#outputDir').addEventListener('change', e => savePatch({ output_dir: e.target.value.trim() }));
 
   $('#checkFont').addEventListener('click', async () => {
     try {

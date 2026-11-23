@@ -33,6 +33,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # 书库
     "library_root": "/Book",
     "upload_dir": "temp",
+    # 输出位置：留空 = 和源文件放一起；填绝对路径则统一收进去
+    "output_dir": "",
 }
 
 

@@ -119,7 +119,8 @@ def _run(job: Job) -> None:
         item.status = "running"
         t0 = time.time()
         try:
-            out_path = _out_path(Path(item.src), job.target, item.name)
+            out_path = _out_path(Path(item.src), job.target, item.name,
+                                 str(job.options.get("output_dir", "")))
             r = convert(
                 item.src, job.target, out=out_path,
                 dpi=float(job.options.get("render_dpi", 200)),
@@ -136,6 +137,24 @@ def _run(job: Job) -> None:
                 item.out_size = Path(item.out).stat().st_size if item.out else 0
             except OSError:
                 item.out_size = 0
+
+            # 删源文件：只在转换成功后做，失败绝不动源文件
+            if job.options.get("delete_source"):
+                src_p = Path(item.src)
+                # 输出和源是同一个文件时绝不删（防手滑把自己删了）
+                same = False
+                try:
+                    same = Path(item.out).resolve() == src_p.resolve()
+                except OSError:
+                    same = False
+                if same:
+                    item.note = _join_note(item.note, "输出与源同路径，未删除源文件")
+                else:
+                    try:
+                        src_p.unlink()
+                        item.note = _join_note(item.note, "源文件已删除")
+                    except OSError as e:
+                        item.note = _join_note(item.note, f"删除源文件失败：{e.strerror or e}")
         except Exception as e:                       # 单个文件失败不影响整批
             item.ok = False
             item.status = "fail"
@@ -163,13 +182,33 @@ def _run(job: Job) -> None:
     job.status = "done"
 
 
-def _out_path(src: Path, target: str, name: str) -> Path:
-    """输出放源文件同目录，重名加 _1 _2。"""
+def _join_note(a: str, b: str) -> str:
+    return (a + " · " + b) if a else b
+
+
+def _out_path(src: Path, target: str, name: str, output_dir: str = "") -> Path:
+    """算输出路径。
+
+    output_dir 为空 → 和源文件放一起（覆盖前会加序号，绝不覆盖原件）
+    output_dir 有值 → 统一收进去，目录不存在就建
+    """
     stem = src.stem
-    out = src.with_name(f"{stem}.{target}")
+    if output_dir.strip():
+        folder = Path(output_dir).expanduser()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise RuntimeError(f"输出目录不可用：{folder}（{e.strerror or e}）") from e
+        out = folder / f"{stem}.{target}"
+    else:
+        out = src.with_name(f"{stem}.{target}")
+
     n = 1
     while out.exists() and out.resolve() != src.resolve():
-        out = src.with_name(f"{stem}_{n}.{target}")
+        if output_dir.strip():
+            out = Path(output_dir).expanduser() / f"{stem}_{n}.{target}"
+        else:
+            out = src.with_name(f"{stem}_{n}.{target}")
         n += 1
     return out
 
