@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from . import store
+from bookforge.naming import safe_stem
 
 
 @dataclass
@@ -178,6 +179,7 @@ def _run(job: Job) -> None:
                 dpi=float(job.options.get("render_dpi", 200)),
                 page_size=str(job.options.get("page_size", "a5")),
                 font=str(job.options.get("font_path", "")),
+                src_name=item.name,     # 原始文件名，别让随机 file_id 变成书名
             )
             item.ok = True
             item.mode = r.get("mode", "")
@@ -262,6 +264,7 @@ def _join_note(a: str, b: str) -> str:
     return (a + " · " + b) if a else b
 
 
+
 def _out_path(src: Path, target: str, name: str, output_dir: str = "") -> Path:
     """算输出路径。**保证结果永远不会是源文件本身。**
 
@@ -283,7 +286,9 @@ def _out_path(src: Path, target: str, name: str, output_dir: str = "") -> Path:
         except OSError as e:
             raise RuntimeError(f"输出目录不可用：{folder}（{e.strerror or e}）") from e
 
-    stem = src.stem
+    # 关键：用用户看到的原始文件名，不用磁盘上的随机存储名。
+    # name 是上传时登记的展示名；取不到才回退到路径 stem（书库里的文件本来就是真名）。
+    stem = safe_stem(name) or src.stem
     try:
         src_resolved = src.resolve()
     except OSError:

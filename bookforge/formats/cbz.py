@@ -62,8 +62,16 @@ def _read_comicinfo(zf: zipfile.ZipFile) -> dict:
             break
     if not target:
         return {}
+    # 元数据文件也可能是个几 GB 的炸弹。check_zip 已经查过一遍，
+    # 但那道闸在校验顺序被改动时会失效 —— 高风险路径自己再卡一次。
     try:
-        root = ET.fromstring(zf.read(target))
+        info = zf.getinfo(target)
+        if info.file_size > limits.MAX_ENTRY_BYTES:
+            return {}
+        blob = zf.read(target)
+        if len(blob) > limits.MAX_ENTRY_BYTES:
+            return {}
+        root = ET.fromstring(blob)
     except Exception:
         return {}
     mapping = {"Title": "title", "Series": "series", "Number": "number",
@@ -80,6 +88,10 @@ def read(path: str | Path) -> ComicBook:
     """CBZ / ZIP → ComicBook（图片原字节）"""
     path = Path(path)
     with zipfile.ZipFile(path) as zf:
+        try:
+            limits.check_zip(zf)          # 条目数 + 单项 + 累计声明大小
+        except limits.LimitError as e:
+            raise ValueError(str(e)) from e
         names = [n for n in zf.namelist()
                  if not n.endswith("/") and not _is_junk(n)
                  and Path(n).suffix.lower() in IMAGE_EXTS]
@@ -101,6 +113,10 @@ def read(path: str | Path) -> ComicBook:
                     f"单页 {n} 解压后 {info.file_size / 2**20:.0f} MB，超过上限 "
                     f"{MAX_PAGE_BYTES / 2**20:.0f} MB")
             data = zf.read(n)
+            if len(data) > MAX_PAGE_BYTES:
+                raise ValueError(
+                    f"单页 {n} 实际解压 {len(data) / 2**20:.0f} MB，"
+                    f"超过上限 {MAX_PAGE_BYTES / 2**20:.0f} MB")
             w, h, fmt = png.image_size(data)
             pages.append(Page(
                 data=data,
@@ -132,15 +148,27 @@ def read_cb7(path: str | Path) -> ComicBook:
     if nested and not any(Path(n).suffix.lower() in IMAGE_EXTS for n in files):
         import io
         merged: list[Page] = []
+        # 内层 ZIP 不重置额度：一个包一次转换只有这一份预算
+        budget = limits.Budget()
         for n in sorted(nested, key=natural_key):
             try:
                 with zipfile.ZipFile(io.BytesIO(files[n])) as zf:
+                    try:
+                        limits.check_zip(zf, budget)
+                    except limits.LimitError as e:
+                        raise ValueError(f"内层 {n}：{e}") from e
                     inner = [x for x in zf.namelist()
                              if not x.endswith("/") and not _is_junk(x)
                              and Path(x).suffix.lower() in IMAGE_EXTS]
                     inner.sort(key=natural_key)
                     for x in inner:
                         data = zf.read(x)
+                        # 头部声明会撒谎，读出来按实际字节再卡一次
+                        if len(data) > limits.MAX_ENTRY_BYTES:
+                            raise ValueError(
+                                f"内层 {n} 的 {x} 实际解压 "
+                                f"{len(data) / 2**20:.0f} MB，超过单文件上限 "
+                                f"{limits.MAX_ENTRY_BYTES / 2**20:.0f} MB")
                         w, h, fmt = png.image_size(data)
                         merged.append(Page(data=data,
                                            fmt=fmt or normalize_fmt(Path(x).suffix),

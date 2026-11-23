@@ -19,9 +19,12 @@ import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _testenv                                            # noqa: E402,F401
 
 from bookforge import convert                       # noqa: E402
 from bookforge.formats import cbz                   # noqa: E402
+from bookforge.formats import limits                # noqa: E402
 
 
 def make_png(w: int, h: int, seed: int = 0) -> bytes:
@@ -41,24 +44,44 @@ def make_png(w: int, h: int, seed: int = 0) -> bytes:
 
 
 class TestUnzipBomb(unittest.TestCase):
+    """解压炸弹防护。
+
+    ⚠️ 一律「缩小阈值 + 小数据」来测，不造 300MB / 900MB 的真实数组。
+    早先那版在 CI 里真的分配过 GB 级内存，跑一次就把 runner 压得半死，
+    而且测的是「能不能分配」而不是「限额逻辑对不对」。
+    """
+
+    def setUp(self):
+        self._entry = limits.MAX_ENTRY_BYTES
+        self._total = limits.MAX_TOTAL_BYTES
+
+    def tearDown(self):
+        limits.MAX_ENTRY_BYTES = self._entry
+        limits.MAX_TOTAL_BYTES = self._total
+
     def test_single_page_over_limit(self):
-        """单页解压后超上限 → 读的时候就拒，且不用真解压（0.0s）"""
+        """单页声明超上限 → 读取入口就拒，不用真解压。"""
+        limits.MAX_ENTRY_BYTES = 1 << 20                     # 1MB
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "bomb.cbz"
             with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as zf:
                 zf.writestr("001.png", make_png(8, 8))
-                zf.writestr("002.png", b"\x00" * 300_000_000)
-            with self.assertRaisesRegex(ValueError, "超过上限"):
+                zf.writestr("002.png", b"\x00" * (2 << 20))     # 声明 2MB（压缩后很小）
+            with self.assertRaisesRegex(ValueError, "超过单文件上限"):
                 convert(p, "pdf", out=Path(d) / "o.pdf")
 
     def test_total_over_limit(self):
+        """累计超上限 → 拒。单项不超，走的是总量那道闸。"""
+        limits.MAX_ENTRY_BYTES = 1 << 20                     # 单项 1MB
+        limits.MAX_TOTAL_BYTES = 1 << 20                     # 总量也 1MB
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "bomb2.cbz"
             with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as zf:
-                for i in range(6):
-                    zf.writestr(f"{i}.png", b"\x00" * 900_000_000)
-            with self.assertRaises(ValueError):
+                for i in range(4):
+                    zf.writestr(f"{i}.png", b"\x00" * (400 << 10))   # 400KB × 4
+            with self.assertRaises(ValueError) as ctx:
                 convert(p, "pdf", out=Path(d) / "o.pdf")
+            self.assertIn("上限", str(ctx.exception))
 
     def test_zip_to_cbz_copies_without_extracting(self):
         """zip→cbz 是容器等价复制，不解压，所以大包也照过（正确行为）"""

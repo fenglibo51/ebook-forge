@@ -16,6 +16,8 @@ import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _testenv                                            # noqa: E402,F401
 
 from bookforge import convert                                  # noqa: E402
 from bookforge.formats import txt_io                           # noqa: E402
@@ -35,6 +37,7 @@ def _font_path() -> Path | None:
 
 
 FONT = _font_path()
+FIXTURE_TTF = Path(__file__).resolve().parent / "fixtures" / "composite.ttf"
 
 
 def sample_book(n_chapters: int = 3) -> TextBook:
@@ -90,24 +93,38 @@ class TestFont(unittest.TestCase):
             self.assertEqual(f2.advance(cid), self.f.advance(self.f.gid(ch)))
 
     def test_composite_references_rewritten(self):
-        """复合字形的 component 必须重新编号，且都在新范围内"""
-        comps = [g for g in range(1, self.f.num_glyphs) if self.f.composite_parts(g)]
-        if not comps:
-            self.skipTest("这个字体没有复合字形")
+        """复合字形的 component 必须跟着重新编号，且指向新范围里的那个字形。
+
+        以前这条会 skip：容器里唯一的中文字体 NotoSansSC 有 30796 个字形，
+        **一个复合字形都没有** —— 等于「子集化最容易出错的路径」从来没被测过。
+        现在改用 tests/fixtures/composite.ttf（手搓的 368 字节字体，
+        gid2 'À' 引用 gid1 'A'），跑的是同一条生产代码，但一定有效。
+        """
+        fx = TrueTypeFont.load(FIXTURE_TTF)
+        comps = [g for g in range(1, fx.num_glyphs) if fx.composite_parts(g)]
+        self.assertTrue(comps, "fixture 里应该有复合字形")
         g = comps[0]
-        chs = [c for c, gg in self.f.cmap.items() if gg == g]
-        if not chs:
-            self.skipTest("找不到对应的字符")
+        orig_parts = fx.composite_parts(g)
+        chs = [c for c, gg in fx.cmap.items() if gg == g]
+        self.assertTrue(chs, "fixture 的复合字形没挂到任何字符上")
         ch = chr(chs[0])
-        sub, mapping = self.f.subset({ch})
+
+        sub, mapping = fx.subset({ch})
         p = Path(tempfile.mkdtemp()) / "c.ttf"
         p.write_bytes(sub)
         f2 = TrueTypeFont.load(p)
+
         parts = f2.composite_parts(mapping[ch])
-        self.assertEqual(len(parts), len(self.f.composite_parts(g)))
+        self.assertEqual(len(parts), len(orig_parts))
         for x in parts:
-            self.assertLess(x, f2.num_glyphs)
+            self.assertLess(x, f2.num_glyphs, "component 指到了新范围外")
             self.assertTrue(f2.glyph_data(x), "被引用的字形丢了数据")
+        # 关键断言：被引用的 'B' 在旧字体里是 gid 2，子集里只剩 B 和 À 两个字，
+        # 按旧顺序重排后 B 变 1、À 变 2。忘了重写 component 就会指回旧号 2 ——
+        # 而 2 在新字体里正好是 'À' 自己，等于自引用，画出来是一坨错字。
+        self.assertNotIn(mapping[ch], parts, "component 指回了自己（没重编号）")
+        self.assertEqual(parts[0], 1,
+                         f"component 指向 {parts[0]}，应该指向 B 的新编号 1")
 
 
 @unittest.skipIf(FONT is None, "容器里没有可用的中文字体")

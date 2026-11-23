@@ -61,17 +61,39 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.meta.outputs.ver }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: 冒烟测试推上去的镜像
+      - name: 确认镜像就是这次提交构建的
+        run: |
+          set -e
+          IMG="${{ env.IMAGE }}:${{ steps.meta.outputs.ver }}"
+          REV=$(docker image inspect "$IMG" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
+          echo "镜像 revision = $REV"
+          echo "本次提交      = ${{ github.sha }}"
+          [ "$REV" = "${{ github.sha }}" ] || { echo "✗ 镜像不是这次提交构建的（可能命中了旧缓存）"; exit 1; }
+
+      - name: 起容器
         run: |
           docker run -d --name smoke -p 8506:8506 \
-            -e EBOOKFORGE_DATA=/data "${{ env.IMAGE }}:${{ steps.meta.outputs.ver }}"
-          for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:8506/api/health > /dev/null; then
-              echo "健康检查通过"; curl -s http://127.0.0.1:8506/api/health; exit 0
-            fi
-            sleep 2
-          done
-          echo "镜像起来了但健康检查没过"; docker logs smoke; exit 1
+            -e EBOOKFORGE_DATA=/data \
+            -e EBOOKFORGE_BOOK_DIR=/data/Book \
+            "${{ env.IMAGE }}:${{ steps.meta.outputs.ver }}"
+
+      - name: 镜像里该有的东西都在
+        run: |
+          set -e
+          IMG="${{ env.IMAGE }}:${{ steps.meta.outputs.ver }}"
+          # 中文字体是 PDF 中文渲染的命根子，镜像里少了它 health 照样 200，
+          # 用户一转中文书才炸。这里先验一遍。
+          docker run --rm --entrypoint sh "$IMG" -c 'ls -la /app/assets/fonts/ && test -n "$(ls /app/assets/fonts/ 2>/dev/null)"' \
+            || { echo "✗ 镜像里没有字体"; exit 1; }
+          docker run --rm --entrypoint python3 "$IMG" -c "import fastapi, uvicorn, multipart; print('web 依赖 OK')"
+
+      - name: 端到端冒烟（上传→转换→下载）
+        run: python3 .github/smoke_test.py --base http://127.0.0.1:8506
+
+      - name: 失败时导出容器日志
+        if: failure()
+        run: docker logs smoke 2>&1 | tail -60 || true

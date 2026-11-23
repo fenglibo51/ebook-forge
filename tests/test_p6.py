@@ -19,6 +19,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _testenv                                            # noqa: E402,F401
 
 from bookforge.pdf._g4enc import encode_bitmap          # noqa: E402
 from bookforge.pdf.reader import PDFDocument            # noqa: E402

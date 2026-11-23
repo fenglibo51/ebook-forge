@@ -12,6 +12,7 @@ import shutil
 from pathlib import Path
 
 from .formats import cbz, epub, png
+from .naming import display_stem
 from .model import ComicBook
 from .pdf.writer import A4, A5, PDFWriter
 
@@ -129,7 +130,8 @@ def read_comic(path: str | Path) -> ComicBook:
 
 def convert(src: str | Path, target: str, *, out: str | Path | None = None,
             dpi: float = 300.0, fit: str = "native",
-            page_size: str = "a5", font: str = "") -> dict:
+            page_size: str = "a5", font: str = "",
+            src_name: str = "") -> dict:
     """转换单个漫画文件。
 
     target: cbz / zip / epub / pdf
@@ -137,6 +139,9 @@ def convert(src: str | Path, target: str, *, out: str | Path | None = None,
     dpi:    只在 fit=native 时决定页面物理尺寸；默认 300（漫画扫描件主流）
     """
     src = Path(src)
+    # 磁盘上是随机 file_id（Web 上传），用户看到的是原始名。
+    # 默认书名 / 内嵌标题兜底一律用这个，绝不把存储 ID 写进书里。
+    title_fallback = display_stem(src, src_name)
     target = target.lower().lstrip(".")
     if not src.is_file():
         raise ConvertError(f"文件不存在：{src}")
@@ -169,7 +174,7 @@ def convert(src: str | Path, target: str, *, out: str | Path | None = None,
         # 源文件没带标题就用文件名兜底（txt 几乎没有内嵌标题）
         if not (book.metadata or {}).get("title"):
             book.metadata = dict(book.metadata or {})
-            book.metadata["title"] = src.stem
+            book.metadata["title"] = title_fallback
         out_path, note = write_text_book(book, target, out_path,
                                          font=font, page_size=page_size)
         return {"ok": True, "out": str(out_path),
@@ -185,6 +190,11 @@ def convert(src: str | Path, target: str, *, out: str | Path | None = None,
     book = read_comic(src)
     if not book.pages:
         raise ConvertError("源文件里没有图片页")
+    # 读取器用 path.stem 兜底了书名，这里换成用户看到的原始名
+    meta = dict(book.metadata or {})
+    if not meta.get("title") or meta.get("title") == src.stem:
+        meta["title"] = title_fallback
+        book.metadata = meta
 
     note = ""
     if src.suffix.lower() == ".epub" and target in ("cbz", "zip", "pdf"):

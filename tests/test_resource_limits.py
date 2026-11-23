@@ -18,9 +18,13 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _testenv                                            # noqa: E402,F401
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
 from bookforge.formats import limits                      # noqa: E402
 from bookforge.formats import sevenz                      # noqa: E402
+from fixtures.gen_7z import build                          # noqa: E402
 from bookforge.formats.docx import read as docx_read      # noqa: E402
 from bookforge.formats.epub import read_text              # noqa: E402
 
@@ -93,58 +97,90 @@ class ZipLimitTests(unittest.TestCase):
 
 
 class SevenZLimitTests(unittest.TestCase):
-    """7z 两道检查：头部声明 + 实际解压。"""
+    """7z 的两道闸，**全部走真实的 sevenz.read_all()**。
 
-    def test_declared_size_rejected_before_decompress(self):
-        """声明超限必须在真解压之前就拒 —— 这道能真正省下内存。"""
-        from unittest import mock
+    早先这里是「把生产检查逻辑在测试里抄一遍再主动抛异常」，
+    生产代码删掉测试照样绿 —— 等于没测。现在用 gen_7z 造真文件喂给真读取器。
+    """
 
-        # 伪造头解析：声明 1GB，实际没解压
-        fake_folder = mock.MagicMock()
-        fake_folder.unpack_sizes = [1 << 30]
-        fake_si = mock.MagicMock()
-        fake_si.folders = [fake_folder]
-        fake_si.names = ["a.jpg"]
-        fake_si.empty = [False]
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="ebf_7z_"))
 
-        decoded = mock.MagicMock()
-        with mock.patch.object(sevenz, "_decode_folder", decoded):
-            with self.assertRaises(sevenz.SevenZError) as ctx:
-                # 手动走一遍 read_all 里的声明检查逻辑：声明 1GB > 上限 1MB
-                declared = fake_folder.unpack_sizes[-1]
-                max_total = 1 << 20
-                if declared > max_total:
-                    raise sevenz.SevenZError(
-                        f"7z 声明解压后 {declared / 1048576:.0f} MB，超过上限 {max_total / 1048576:.0f} MB")
-            decoded.assert_not_called()                   # 关键：一个字节都没解
+    def _write(self, name: str, blob: bytes) -> Path:
+        p = self.tmp / name
+        p.write_bytes(blob)
+        return p
+
+    def test_declared_size_rejected(self):
+        """头里声明解压后 1GB → 真 read_all 在解压前就拒。"""
+        p = self._write("declared.7z",
+                        build({"a.txt": b"x" * 100},
+                              declared_unpack={"a.txt": 1 << 30}))
+        with self.assertRaises(sevenz.SevenZError) as ctx:
+            sevenz.read_all(p, max_total=1 << 20)
         self.assertIn("声明解压后", str(ctx.exception))
 
-    def test_actual_bytes_rejected_after_decompress(self):
-        """头部撒谎（声明小、实际大）时，实际解压量必须再卡一次。"""
-        import zlib
-        from unittest import mock
+    def test_actual_bytes_rejected(self):
+        """头部撒谎（声明 100 字节、实际 3MB）→ 解压后按实际字节再拒一次。"""
+        payload = b"A" * (3 << 20)
+        p = self._write("liar.7z",
+                        build({"a.txt": payload}, declared_unpack={"a.txt": 100}))
+        with self.assertRaises(sevenz.SevenZError) as ctx:
+            sevenz.read_all(p, max_total=1 << 20)
+        msg = str(ctx.exception)
+        self.assertTrue("超" in msg or "上限" in msg, msg)
 
-        # 造一个最小合法 7z 头：不做完整编码，直接 mock 掉头解析和解压
-        fake_streams = mock.MagicMock()
-        fake_streams.folders = [object()]
-        fake_streams.pack_sizes = [0]
-        fake_streams.sub_counts = [1]
-        fake_streams.sub_sizes = []
-        fake_streams.pack_offsets = [0]
+    def test_lzma_bomb_stops_midway(self):
+        """LZMA 炸弹：压缩后几十 KB，解压 8MB，上限 1MB → 必须中止而不是解完再看。"""
+        payload = b"\0" * (8 << 20)
+        blob = build({"big.bin": payload}, use_lzma=True,
+                     declared_unpack={"big.bin": 64})
+        self.assertLess(len(blob), 1 << 20, "压缩后应该很小，否则不算炸弹")
+        p = self._write("bomb.7z", blob)
+        with self.assertRaises(sevenz.SevenZError):
+            sevenz.read_all(p, max_total=1 << 20)
 
-        real_blob = b"A" * (3 << 20)                      # 实际 3MB
+    def test_multi_folder_content_not_mixed(self):
+        """多 folder 的 7z 每个文件必须是自己的内容。
 
-        with mock.patch.object(sevenz, "_decode_folder", return_value=real_blob):
-            with self.assertRaises(sevenz.SevenZError) as ctx:
-                # 直接调用内部逻辑：声明 0 字节，上限 1MB
-                actual = 0
-                max_total = 1 << 20
-                blob = sevenz._decode_folder(b"", None, [0], [0])
-                actual += len(blob)
-                if actual > max_total:
-                    raise sevenz.SevenZError(
-                        f"7z 实际解压出 {actual / 1048576:.0f} MB，超过上限 {max_total / 1048576:.0f} MB")
-        self.assertIn("实际解压出", str(ctx.exception))
+        回归用：早先 pack_indices 被当全局下标，所有 folder 都解第一段数据，
+        三个文件全变成同一个内容且**不报错**。
+        """
+        data = {"a.txt": b"AAA-first", "b.txt": b"BBB-second", "c.txt": b"CCC-third"}
+        for use_lzma in (False, True):
+            p = self._write(f"multi{int(use_lzma)}.7z",
+                            build(data, use_lzma=use_lzma))
+            got = sevenz.read_all(p)
+            self.assertEqual(got, data, f"use_lzma={use_lzma} 时内容串了")
+
+    def test_normal_7z_still_works(self):
+        """正常包不能被限额误伤。"""
+        data = {"x.txt": b"hello", "y.txt": b"world"}
+        p = self._write("ok.7z", build(data, use_lzma=True))
+        self.assertEqual(sevenz.read_all(p), data)
+
+    def test_limits_come_from_production_code(self):
+        """限额必须真的由生产代码执行 —— 放宽后才允许通过同一份文件。
+
+        这条证明上面那些拒绝不是因为测试自己抛的异常：
+        同一个文件，上限 1MB 拒、上限 100MB 过。
+        """
+        payload = b"B" * (2 << 20)
+        p = self._write("two.7z", build({"a.txt": payload}, use_lzma=True))
+        with self.assertRaises(sevenz.SevenZError):
+            sevenz.read_all(p, max_total=1 << 20)
+        self.assertEqual(sevenz.read_all(p, max_total=100 << 20), {"a.txt": payload})
+
+    def test_failure_leaves_source_intact(self):
+        """拒绝之后源文件还在，目录里没多出垃圾。"""
+        p = self._write("keep.7z", build({"a.bin": b"C" * (2 << 20)},
+                                        declared_unpack={"a.bin": 10}))
+        before = p.stat().st_size
+        with self.assertRaises(sevenz.SevenZError):
+            sevenz.read_all(p, max_total=1 << 20)
+        self.assertTrue(p.exists())
+        self.assertEqual(p.stat().st_size, before)
+        self.assertEqual([f.name for f in self.tmp.iterdir()], ["keep.7z"])
 
 
 class CleanupTests(unittest.TestCase):

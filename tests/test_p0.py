@@ -14,6 +14,8 @@ import struct
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _testenv                                            # noqa: E402,F401
 
 from bookforge import ConvertError, convert
 from bookforge.formats import cbz, epub, png   # noqa: E402

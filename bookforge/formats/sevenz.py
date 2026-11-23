@@ -20,6 +20,8 @@ import lzma
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import limits
+
 SIG = b"7z\xbc\xaf\x27\x1c"
 
 # kHeader 系列
@@ -128,25 +130,28 @@ class _StreamsInfo:
     folders: list[_Folder] = field(default_factory=list)
     sub_counts: list[int] = field(default_factory=list)
     sub_sizes: list[int] = field(default_factory=list)
+    # 哪些 folder 的 CRC 已经在 UnpackInfo 里给过（单 substream 的不再重复列）
+    folder_crc: set[int] = field(default_factory=set)
 
 
-def _skip_digests(r: _Reader, count: int) -> None:
-    """7z 的 CRC 列表：先 1 字节 AllAreDefined，再按需读 4 字节 CRC。
+def _read_digests(r: _Reader, count: int) -> list[bool]:
+    """读一段 7z CRC 列表，返回哪些位有值（值本身丢掉，我们用不上）。
 
     ⚠️ 那个 AllAreDefined 字节必须读 —— 漏了它后面全错位
     （症状：解析主 header 时报「未知类型 112」这种鬼数字）。
     """
     if count <= 0:
-        return
+        return []
     all_defined = r.byte()
     if all_defined:
         r.take(4 * count)
-        return
+        return [True] * count
     flags = r.bits(count)
     for defined in flags:
         if defined:
             r.u32()
 
+    return flags
 
 def _read_pack_info(r: _Reader, si: _StreamsInfo) -> None:
     si.pack_pos = r.number()
@@ -161,7 +166,7 @@ def _read_pack_info(r: _Reader, si: _StreamsInfo) -> None:
         if t == kSize:
             si.pack_sizes = [r.number() for _ in range(n)]
         elif t == kCRC:
-            _skip_digests(r, n)
+            _read_digests(r, n)
         else:
             r.take(r.number())
 
@@ -225,6 +230,9 @@ def _read_unpack_info(r: _Reader, si: _StreamsInfo) -> None:
                 raise SevenZError("7z 缺少 CodersUnpackSize")
             for f in si.folders:
                 f.unpack_sizes = [r.number() for _ in f.coders]
+        elif t == kCRC:
+            defined = _read_digests(r, len(si.folders))
+            si.folder_crc = {i for i, d in enumerate(defined) if d}
         else:
             size = r.number()
             r.take(size)
@@ -253,8 +261,12 @@ def _read_substreams(r: _Reader, si: _StreamsInfo) -> None:
             # 每个 substream 一个 CRC；但「只有一个 stream 的 folder」用它自己的
             # folder CRC，不再单独列 → 数量要减掉这些 folder
             total = sum(si.sub_counts)
-            num_digests = total - sum(1 for c in si.sub_counts if c == 1)
-            _skip_digests(r, num_digests)
+            # 单 substream 的 folder，若 CRC 已在 UnpackInfo 给过，这里就不重复；
+            # 否则每个 substream 都要一份。早先无条件减去单流 folder 数，
+            # 碰上「folder 自己没 CRC」的真实文件就会少读 4*N 字节 → 后面全错位。
+            covered = sum(1 for i, c in enumerate(si.sub_counts)
+                          if c == 1 and i in si.folder_crc)
+            _read_digests(r, total - covered)
         else:
             r.take(r.number())
 
@@ -314,11 +326,19 @@ def _read_files_info(r: _Reader) -> tuple[list[str], list[bool]]:
     return names, empty
 
 
+# 增量解压的每块大小。1MB 足够小，让峰值内存不随解压总量线性上涨
+_CHUNK = 1 << 20
+
+
 def _decode_folder(data: bytes, folder: _Folder, pack_sizes: list[int],
-                   pack_offsets: list[int]) -> bytes:
+                   pack_offsets: list[int],
+                   limit: int | None = None, pack_base: int = 0) -> bytes:
     if len(folder.pack_indices) != 1:
         raise SevenZError("7z 多包流（BCJ2 等）暂不支持")
-    idx = folder.pack_indices[0]
+    # pack_indices 是 folder **内部**的序号，不是全局包流下标。
+    # 多 folder 的 7z 里每个 folder 都从 0 开始，直接用会把所有 folder
+    # 都解成第一段数据（静默数据错误，不报错）。必须加外层累加的基准。
+    idx = folder.pack_indices[0] + pack_base
     raw = data[pack_offsets[idx]:pack_offsets[idx] + pack_sizes[idx]]
 
     if len(folder.coders) == 1 and folder.coders[0][0] == 0x00:
@@ -343,10 +363,31 @@ def _decode_folder(data: bytes, folder: _Folder, pack_sizes: list[int],
                 entry["dict_size"] = dic
         filters.append(entry)
 
+    # ⚠️ 不能再用 lzma.decompress(...) 一次性解完：
+    # 那样上限只能事后检查，一个炸弹 folder 在解压过程中就已经把内存吃满。
+    # 改成增量解码，每块 1MB，累计一超限立刻停手。
+    if limit is None:
+        limit = limits.MAX_TOTAL_BYTES
+    dec = lzma.LZMADecompressor(format=lzma.FORMAT_RAW, filters=filters)
+    out = bytearray()
+    src = raw
     try:
-        return lzma.decompress(raw, format=lzma.FORMAT_RAW, filters=filters)
+        while True:
+            chunk = dec.decompress(src, max_length=_CHUNK)
+            src = b""                       # 一次喂完，之后靠 output 缓冲
+            if chunk:
+                out += chunk
+                if len(out) > limit:
+                    raise SevenZError(
+                        f"7z 单个数据块解压超过 {limit / 2**30:.1f} GB 上限，"
+                        "已中止（解压炸弹防护）")
+            if dec.eof:
+                break
+            if not chunk and dec.needs_input:
+                raise SevenZError("7z 数据流意外结束（输入已耗尽但没有解压完）")
     except lzma.LZMAError as e:
         raise SevenZError(f"7z 解压失败：{e}")
+    return bytes(out)
 
 
 def _pack_offsets(si: _StreamsInfo) -> list[int]:
@@ -363,13 +404,20 @@ def _pack_offsets(si: _StreamsInfo) -> list[int]:
 
 
 def read_all(path: str | Path, *,
-             max_total: int = 4 * 1024 ** 3,
-             max_entry: int = 256 * 1024 ** 2,
-             max_entries: int = 5000) -> dict[str, bytes]:
+             max_total: int | None = None,
+             max_entry: int | None = None,
+             max_entries: int | None = None) -> dict[str, bytes]:
     """把 7z 里所有文件解出来 → {名字: 内容}。
 
     max_total / max_entry / max_entries：解压前按 7z 头里的声明大小拒绝炸弹包。
+
+    ⚠️ 默认值取 limits 里的那一套，不要在这里另写一份常量。
+    早先这里硬编码 4GB/256MB/5000，和 limits.py 各说各话：
+    改环境变量只能改到一半，测 CB7 限额时改了 limits 也完全不起作用。
     """
+    max_total = limits.MAX_TOTAL_BYTES if max_total is None else max_total
+    max_entry = limits.MAX_ENTRY_BYTES if max_entry is None else max_entry
+    max_entries = limits.MAX_ENTRIES if max_entries is None else max_entries
     path = Path(path)
     data = path.read_bytes()
     if not data.startswith(SIG):
@@ -394,8 +442,10 @@ def read_all(path: str | Path, *,
         enc_si = _read_streams_info(hr)
         if not enc_si.folders:
             raise SevenZError("7z 编码头里没有文件夹")
+        # 编码头本身也可能是个炸弹（头声明「我要解出 4GB」）。
+        # 但头正常就几 KB，用正文的额度去放它太宽松 —— 单独卡到单条目上限。
         header = _decode_folder(data, enc_si.folders[0], enc_si.pack_sizes,
-                                _pack_offsets(enc_si))
+                                _pack_offsets(enc_si), limit=max_entry)
         hr = _Reader(header)
         kind = hr.number()
     if kind != kHeader:
@@ -437,8 +487,11 @@ def read_all(path: str | Path, *,
 
     blobs: list[bytes] = []
     actual = 0
+    pack_base = 0
     for folder in streams.folders:
-        blob = _decode_folder(data, folder, streams.pack_sizes, pack_offsets)
+        blob = _decode_folder(data, folder, streams.pack_sizes, pack_offsets,
+                              limit=max_total, pack_base=pack_base)
+        pack_base += max(1, len(folder.pack_indices))
         actual += len(blob)
         # 头部声明的大小可以撒谎，这里按**实际解压出来的字节数**再卡一次。
         # 注意：lzma.decompress 是一次性调用，解压过程中拦不住 ——

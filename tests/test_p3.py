@@ -20,6 +20,8 @@ import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _testenv                                            # noqa: E402,F401
 
 from bookforge import ConvertError, convert                    # noqa: E402
 from bookforge.formats import mobi                             # noqa: E402

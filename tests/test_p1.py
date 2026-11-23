@@ -19,6 +19,8 @@ import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _testenv                                            # noqa: E402,F401
 
 from bookforge import convert                                  # noqa: E402
 from bookforge.formats import cbz, png                         # noqa: E402

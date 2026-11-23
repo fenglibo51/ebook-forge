@@ -30,6 +30,37 @@ INDEX_FILE = store.DATA_DIR / "uploads.json"
 _lock = threading.Lock()
 
 
+def _mb_env(name: str, default: int) -> int:
+    """读「多少 MB」形式的环境变量，转成字节。"""
+    try:
+        return int(os.environ.get(name, str(default))) << 20
+    except ValueError:
+        return default << 20
+
+
+# ── 配额 ────────────────────────────────────────────────────────────────
+# 单次请求的大小限制挡不住「同一条分享链接反复传」：每次都在限额内，
+# 几十次之后就把 /data/uploads 塞满了。所以还要有「累计」这一层。
+#
+# 三级额度，默认值按家用 NAS 的小磁盘估的，都能用环境变量调：
+#   全目录总占用    EBOOKFORGE_UPLOAD_QUOTA_MB   默认 2048
+#   单条分享链接    EBOOKFORGE_SHARE_QUOTA_MB    默认 512
+#   单会话（sid）   EBOOKFORGE_SID_QUOTA_MB      默认 128
+QUOTA_TOTAL_BYTES = _mb_env("EBOOKFORGE_UPLOAD_QUOTA_MB", 2048)
+QUOTA_TOKEN_BYTES = _mb_env("EBOOKFORGE_SHARE_QUOTA_MB", 512)
+QUOTA_SID_BYTES = _mb_env("EBOOKFORGE_SID_QUOTA_MB", 128)
+
+# 正在写、还没登记的字节。不落盘 —— 它只用于并发准入判断，
+# 进程重启时这些半截文件会被孤儿清理扫掉。
+_inflight = {"total": 0}
+_inflight_token: dict[str, int] = {}
+_inflight_sid: dict[str, int] = {}
+
+
+class QuotaError(Exception):
+    """累计配额已满。调用方转成 413 + 人话提示。"""
+
+
 def _load() -> dict[str, dict[str, Any]]:
     if not INDEX_FILE.exists():
         return {}
@@ -103,6 +134,48 @@ def forget(file_id: str) -> None:
             _save(data)
 
 
+def drop_token(token: str) -> int:
+    """删掉某条分享链接名下的所有上传副本 + 索引记录，返回清理条数。
+
+    为什么必须做：链接被撤销/关闭分享以后，那些文件再也取不出来了
+    （归属校验认的是 token），可索引还留着、配额还照算 ——
+    用户明明「什么都没上传」，额度却显示快满。撤销这一刻就该收干净。
+    """
+    if not token:
+        return 0
+    with _lock:
+        data = _load()
+        doomed = [k for k, v in data.items() if v.get("token") == token]
+        for k in doomed:
+            try:
+                Path(data[k].get("path", "")).unlink()
+            except OSError:
+                pass
+            data.pop(k, None)
+        if doomed:
+            _save(data)
+    return len(doomed)
+
+
+def drop_sid(token: str, sid: str) -> int:
+    """删掉某条链接下某个会话的上传副本（会话结束后可选调用）。"""
+    if not token or not sid:
+        return 0
+    with _lock:
+        data = _load()
+        doomed = [k for k, v in data.items()
+                  if v.get("token") == token and v.get("sid") == sid]
+        for k in doomed:
+            try:
+                Path(data[k].get("path", "")).unlink()
+            except OSError:
+                pass
+            data.pop(k, None)
+        if doomed:
+            _save(data)
+    return len(doomed)
+
+
 def purge_missing() -> int:
     """清掉记录里指向已不存在文件的条目（缓存清理后调用）。"""
     with _lock:
@@ -117,3 +190,158 @@ def purge_missing() -> int:
 
 def count() -> int:
     return len(_load())
+
+def usage() -> dict[str, Any]:
+    """按 uploads.json 里的登记记录算当前占用。
+
+    不用扫目录 —— 目录扫描在文件多时很慢，而且磁盘上的半截文件不该计入配额。
+    孤儿文件由 reconcile() 定期清掉，保证索引和磁盘不会越走越偏。
+    """
+    data = _load()
+    by_token: dict[str, int] = {}
+    by_sid: dict[str, int] = {}
+    total = 0
+    for rec in data.values():
+        n = int(rec.get("size", 0) or 0)
+        total += n
+        t = str(rec.get("token", "") or "")
+        if t:
+            by_token[t] = by_token.get(t, 0) + n
+        sd = str(rec.get("sid", "") or "")
+        if sd:
+            by_sid[sd] = by_sid.get(sd, 0) + n
+    return {"total": total, "by_token": by_token, "by_sid": by_sid, "files": len(data)}
+
+
+def _fmt(n: int) -> str:
+    return f"{n / 2**20:.0f} MB" if n < 2**30 else f"{n / 2**30:.1f} GB"
+
+
+class Ticket:
+    """一次上传的配额凭据。
+
+    用法：begin() 拿票 → 每写一块 admit(n) → 结束 finish()。
+    admit 在锁里比较「已登记 + 别处正在写 + 本次已写 + 新增」，
+    所以两个并发上传不可能一起越过上限（不需要事后补偿）。
+    """
+
+    __slots__ = ("token", "sid", "written", "base_total", "base_token", "base_sid",
+                 "closed")
+
+    def __init__(self, token: str, sid: str):
+        self.token = token
+        self.sid = sid
+        self.written = 0
+        self.closed = False
+        with _lock:
+            u = usage()
+            self.base_total = u["total"]
+            self.base_token = u["by_token"].get(token, 0) if token else 0
+            self.base_sid = u["by_sid"].get(sid, 0) if sid else 0
+
+    def admit(self, nbytes: int) -> None:
+        """再写 nbytes 允许吗？不允许抛 QuotaError。"""
+        if self.closed or nbytes <= 0:
+            return
+        with _lock:
+            others = _inflight["total"] - self.written
+            if self.base_total + others + self.written + nbytes > QUOTA_TOTAL_BYTES:
+                raise QuotaError(
+                    f"上传目录已满：当前用 {_fmt(self.base_total + others + self.written)}，"
+                    f"上限 {_fmt(QUOTA_TOTAL_BYTES)}。"
+                    "旧文件会在 24 小时后自动清理，也可以在设置页手动清")
+            if self.token:
+                other_t = _inflight_token.get(self.token, 0) - self.written
+                used = self.base_token + other_t + self.written
+                if used + nbytes > QUOTA_TOKEN_BYTES:
+                    raise QuotaError(
+                        f"这条分享链接的额度用完了：已用 {_fmt(used)}，"
+                        f"上限 {_fmt(QUOTA_TOKEN_BYTES)}")
+            if self.sid:
+                other_s = _inflight_sid.get(self.sid, 0) - self.written
+                used = self.base_sid + other_s + self.written
+                if used + nbytes > QUOTA_SID_BYTES:
+                    raise QuotaError(
+                        f"当前会话的上传额度用完了：已用 {_fmt(used)}，"
+                        f"上限 {_fmt(QUOTA_SID_BYTES)}")
+            # 记账：本次已写 + 全局正在写
+            self.written += nbytes
+            _inflight["total"] += nbytes
+            if self.token:
+                _inflight_token[self.token] = _inflight_token.get(self.token, 0) + nbytes
+            if self.sid:
+                _inflight_sid[self.sid] = _inflight_sid.get(self.sid, 0) + nbytes
+
+    def finish(self) -> None:
+        """成功或失败都要调 —— 把「正在写」的记账还回去。
+
+        成功时文件已进 uploads.json（size 计入正式占用），
+        失败时文件被删掉，两种情况下 inflight 都必须归零，否则配额会永久泄漏。
+        """
+        if self.closed:
+            return
+        with _lock:
+            _inflight["total"] = max(0, _inflight["total"] - self.written)
+            if self.token:
+                v = _inflight_token.get(self.token, 0) - self.written
+                if v > 0:
+                    _inflight_token[self.token] = v
+                else:
+                    _inflight_token.pop(self.token, None)
+            if self.sid:
+                v = _inflight_sid.get(self.sid, 0) - self.written
+                if v > 0:
+                    _inflight_sid[self.sid] = v
+                else:
+                    _inflight_sid.pop(self.sid, None)
+            self.closed = True
+
+
+def begin(token: str = "", sid: str = "") -> Ticket:
+    return Ticket(token, sid)
+
+
+def purge_orphans(upload_dir: Path, *, min_age: float = 3600.0) -> list[str]:
+    """删掉目录里「索引查不到」的文件，返回删掉的名单。
+
+    为什么会有孤儿：上传写到一半进程被杀、写完但 register 抛异常、
+    索引文件被外部编辑过。这些文件永远不会到期清理（清理按索引走），
+    会一直占着磁盘。
+
+    ⚠️ min_age：刚创建的文件先别动 —— 上传时是「先 open("xb") 建文件、
+    写完之后才 register」，中间那段时间它在索引里查不到，删了就是把
+    正在传的文件干掉。默认只清 1 小时以上的。
+    """
+    import time
+    now = time.time()
+    known = {Path(v.get("path", "")).name for v in _load().values() if v.get("path")}
+    removed: list[str] = []
+    try:
+        entries = list(upload_dir.iterdir())
+    except OSError:
+        return removed
+    for f in entries:
+        if not f.is_file() or f.name in known or f.name.endswith(".tmp"):
+            continue
+        try:
+            if now - f.stat().st_mtime < min_age:
+                continue
+            f.unlink()
+            removed.append(f.name)
+        except OSError:
+            pass
+    return removed
+
+
+def stats() -> dict[str, Any]:
+    u = usage()
+    return {
+        "used_bytes": u["total"],
+        "used_human": _fmt(u["total"]),
+        "limit_bytes": QUOTA_TOTAL_BYTES,
+        "limit_human": _fmt(QUOTA_TOTAL_BYTES),
+        "files": u["files"],
+        "percent": round(u["total"] * 100 / QUOTA_TOTAL_BYTES, 1) if QUOTA_TOTAL_BYTES else 0.0,
+        "token_quota_human": _fmt(QUOTA_TOKEN_BYTES),
+        "sid_quota_human": _fmt(QUOTA_SID_BYTES),
+    }

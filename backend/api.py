@@ -60,6 +60,10 @@ def cleanup_uploads(max_age: float = UPLOAD_TTL) -> dict[str, Any]:
     try:
         from . import uploads as _u
         _u.purge_missing()
+        # 索引里没有的文件（半截上传、登记失败）也一并扫掉，
+        # 否则它们永远不会到期，一直占着磁盘
+        orphans = _u.purge_orphans(UPLOAD_DIR)
+        removed += len(orphans)
     except Exception:
         pass
     return {"removed": removed, "freed": freed}
@@ -165,7 +169,19 @@ async def _do_upload(files: list[UploadFile], token: str = "", sid: str = "") ->
     if len(files) > MAX_FILES_UPLOAD:
         raise HTTPException(413, f"一次最多传 {MAX_FILES_UPLOAD} 个文件，这次给了 {len(files)} 个")
 
-    saved = []
+    # 配额凭据：边写边准入，并发上传不可能一起越过上限
+    ticket = uploads.begin(token, sid)
+    try:
+        total, saved = await _save_loop(files, ticket, token, sid)
+    finally:
+        ticket.finish()
+    return {"files": saved, "total_size": total}
+
+
+async def _save_loop(files: list[UploadFile], ticket: "uploads.Ticket",
+                     token: str, sid: str) -> tuple[int, list[dict[str, Any]]]:
+    """逐个落盘。任何异常都要把半截文件删掉、索引不能留脏记录。"""
+    saved: list[dict[str, Any]] = []
     total = 0
     for f in files:
         name = Path(f.filename or "unnamed").name.replace("\x00", "")
@@ -190,6 +206,7 @@ async def _do_upload(files: list[UploadFile], token: str = "", sid: str = "") ->
             raise HTTPException(500, "分配存储名失败，重试一次")
 
         written = 0
+        registered = False
         try:
             with fh as out:
                 # 边写边累计检查 —— 不只看 Content-Length，客户端可以撒谎
@@ -202,23 +219,31 @@ async def _do_upload(files: list[UploadFile], token: str = "", sid: str = "") ->
                     if total > MAX_UPLOAD_MB * MB:
                         raise HTTPException(
                             413, f"本次上传总量超过上限 {MAX_UPLOAD_MB} MB")
+                    # 累计配额（整个目录 / 这条链接 / 这个会话）
+                    try:
+                        ticket.admit(len(chunk))
+                    except uploads.QuotaError as e:
+                        raise HTTPException(413, str(e)) from e
                     out.write(chunk)
-        except HTTPException:
-            # 超限就把写了一半的文件删掉，别留垃圾
-            try:
-                dest.unlink()
-            except OSError:
-                pass
+            size = dest.stat().st_size
+            uploads.register(dest, name, size, token=token, sid=sid, file_id=fid)
+            registered = True
+        except BaseException:
+            # ⚠️ 不能只 catch HTTPException：
+            # 磁盘满、权限、客户端断流抛的都是 OSError/ConnectionError，
+            # 那些同样会留下写了一半的文件。任何异常都必须清干净。
+            if not registered:
+                try:
+                    dest.unlink()
+                except OSError:
+                    pass
             raise
-
-        size = dest.stat().st_size
-        uploads.register(dest, name, size, token=token, sid=sid, file_id=fid)
         # 只回 file_id，不回服务器路径 —— 访客拿不到别人的路径就没法冒用
         saved.append({"file_id": fid, "name": name, "size": size})
 
     if not saved:
         raise HTTPException(400, "没有收到文件")
-    return {"files": saved, "total_size": total}
+    return total, saved
 
 
 @router.post("/upload")
@@ -443,6 +468,7 @@ def put_settings(patch: dict[str, Any]) -> dict[str, Any]:
         n = 0
         for it in share.list_all():
             if share.revoke(it["token"]):
+                uploads.drop_token(it["token"])
                 n += 1
         if n:
             print(f"[share] 设置里关闭分享模式，已撤销 {n} 条链接")
@@ -512,6 +538,7 @@ def share_toggle(body: ShareToggleIn) -> dict[str, Any]:
     revoked = 0
     for it in share.list_all():
         if share.revoke(it["token"]):
+            uploads.drop_token(it["token"])
             revoked += 1
     return {"enabled": False, "revoked": revoked}
 
@@ -540,7 +567,11 @@ def list_shares() -> dict[str, Any]:
 
 @router.delete("/shares/{token}")
 def revoke_share(token: str) -> dict[str, Any]:
-    return {"revoked": share.revoke(token)}
+    ok = share.revoke(token)
+    if ok:
+        # 链接没了，它名下的上传副本就再也取不出来 —— 当场收掉，别继续占配额
+        uploads.drop_token(token)
+    return {"revoked": ok}
 
 
 # ── 分享链接（访客端，权限只到「转换」） ──────────────────────────────────
