@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 import traceback
@@ -23,6 +24,25 @@ from typing import Any
 
 from . import store, uploads
 from bookforge.naming import safe_stem
+
+# ── 产物单文件上限 ────────────────────────────────────────────────────────
+# 和缓存配额是两件事：配额管「缓存总共占多少」，这个管「一次转换别写出个
+# 巨无霸」。分享访客给得更严 —— 他们的累计配额本来就小。
+#
+# ⚠️ 这是写完之后才检查的。引擎没有统一的写入出口（每种目标格式各自写盘），
+# 要做到「边写边按字节掐断」得给每个 writer 加计数器，改动面太大、风险更高。
+# 所以峰值磁盘占用仍可能短暂超过这个值。真要防住，靠容器磁盘配额兜底。
+MAX_OUTPUT_MB = int(os.environ.get("EBOOKFORGE_MAX_OUTPUT_MB", "2048"))
+SHARE_OUTPUT_MB = int(os.environ.get("EBOOKFORGE_SHARE_OUTPUT_MB", "256"))
+_MB = 1024 * 1024
+
+
+def output_limit_mb(share_token: str = "") -> int:
+    return SHARE_OUTPUT_MB if share_token else MAX_OUTPUT_MB
+
+
+class OutputTooLarge(RuntimeError):
+    """产物超过单文件上限 —— 预期内的失败，不是 bug。"""
 
 
 @dataclass
@@ -191,6 +211,14 @@ def _run(job: Job) -> None:
                 item.out_size = Path(item.out).stat().st_size if item.out else 0
             except OSError:
                 item.out_size = 0
+            # 单文件上限：配额之外单独一道，别让一次转换写出个几 GB 的产物
+            # 把磁盘和后续下载都拖死。分享访客的额度更小，直接拒。
+            limit_mb = output_limit_mb(job.share_token)
+            if item.out_size > limit_mb * _MB:
+                size_mb = item.out_size / _MB
+                _drop_output(item)
+                raise OutputTooLarge(
+                    f"转换结果 {size_mb:.0f} MB 超过单文件上限 {limit_mb} MB")
             # 结果落在上传缓存目录时，登记进索引：
             # 否则 purge_orphans 会把它当孤儿删掉（不到 24 小时保留期就没了），
             # 而且这部分磁盘占用也算不进配额。
@@ -255,7 +283,8 @@ def _run(job: Job) -> None:
             # 配额满、索引写不进去这类是「预期内的失败」，日志一行就够；
             # 甩整段 traceback 只会把真正的 bug 淹掉。
             cause = e.__cause__ if isinstance(e.__cause__, Exception) else None
-            expected = isinstance(cause, (uploads.QuotaError, OSError))
+            expected = isinstance(e, OutputTooLarge) or isinstance(
+                cause, (uploads.QuotaError, OSError))
             if expected:
                 logging.getLogger(__name__).warning(
                     "转换失败（%s）：%s", item.name, item.error)

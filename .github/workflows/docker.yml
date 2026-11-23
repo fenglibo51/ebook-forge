@@ -38,15 +38,15 @@ jobs:
             TAGGED="dev"
           fi
           echo "ver=${TAGGED}" >> "$GITHUB_OUTPUT"
-          # latest 只跟着正式版本走。手动触发（ver=dev）不碰 latest ——
-          # 否则谁手动发一次开发镜像，所有「docker pull :latest」的用户
-          # 都会不知不觉拿到未发布的代码。
-          if [ "$TAGGED" = "dev" ]; then
-            echo "latest=" >> "$GITHUB_OUTPUT"
-            echo "将要推送：${IMAGE}:dev（不动 latest）"
-          else
+          # latest 只跟「正式 git tag」走，不看标签名叫什么。
+          # 早先的判断是 TAGGED != "dev" —— 手动输入 test123 这种照样会
+          # 更新 latest。现在只看触发来源：只有 push refs/tags/v* 才算正式发布。
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             echo "latest=${IMAGE}:latest" >> "$GITHUB_OUTPUT"
-            echo "将要推送：${IMAGE}:${TAGGED} 和 :latest"
+            echo "将要推送：${IMAGE}:${TAGGED} 和 :latest（正式发布）"
+          else
+            echo "latest=" >> "$GITHUB_OUTPUT"
+            echo "将要推送：${IMAGE}:${TAGGED}（不动 latest）"
           fi
 
       - uses: docker/setup-buildx-action@v3

@@ -187,16 +187,15 @@ class OutputQuotaTests(unittest.TestCase):
 
 
 class BodyLimitTests(unittest.TestCase):
-    """P2-03：请求体上限在路由前生效。
+    """P2-03 / P1-01：请求体上限按路径生效，且在路由前拦。
 
     直接调 ASGI 中间件，不走网络 —— 这样能精确控制 Content-Length 和分块。
     """
 
-    def _call(self, headers, chunks, limit):
+    def _call(self, headers, chunks, rules=None, default=1000, path="/api/upload"):
         sent = []
 
         async def app(scope, receive, send):
-            scope  # 下游：把 body 读完再回 200
             while True:
                 msg = await receive()
                 if msg["type"] == "http.disconnect":
@@ -216,28 +215,61 @@ class BodyLimitTests(unittest.TestCase):
                 return queue.pop(0)
             return {"type": "http.disconnect"}
 
-        mw = BodyLimitMiddleware(app, limit=limit)
-        scope = {"type": "http", "headers": headers}
+        mw = BodyLimitMiddleware(app, rules=rules or [], default=default)
+        scope = {"type": "http", "path": path, "headers": headers}
         asyncio.run(mw(scope, receive, send))
         return sent
 
-    def test_content_length_over_limit_rejected_before_reading(self):
-        sent = self._call([(b"content-length", b"999999")], [], limit=1000)
+    @staticmethod
+    def _body(sent):
+        return b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+
+    def test_content_length_over_limit_rejected(self):
+        sent = self._call([(b"content-length", b"999999")], [], default=1000)
         self.assertEqual(sent[0]["status"], 413)
-        body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
-        self.assertIn(b"413", b"" or b"413")   # 占位，真实断言看 detail
-        self.assertIn("请求体太大".encode(), body)
+        self.assertIn("请求体太大".encode(), self._body(sent))
 
     def test_chunked_over_limit_rejected(self):
         chunks = [{"type": "http.request", "body": b"x" * 600, "more_body": True}] * 5
-        sent = self._call([], chunks, limit=1000)
+        sent = self._call([], chunks, default=1000)
         self.assertEqual(sent[0]["status"], 413)
+
+    def test_exactly_at_limit_passes(self):
+        """刚好等于上限应该放行 —— 边界不能差一个字节就拒。"""
+        chunks = [{"type": "http.request", "body": b"x" * 1000, "more_body": False}]
+        sent = self._call([(b"content-length", b"1000")], chunks, default=1000)
+        self.assertEqual(sent[0]["status"], 200)
 
     def test_normal_body_passes_through(self):
         chunks = [{"type": "http.request", "body": b"x" * 400, "more_body": True},
                   {"type": "http.request", "body": b"y" * 400, "more_body": False}]
-        sent = self._call([(b"content-length", b"800")], chunks, limit=1000)
+        sent = self._call([(b"content-length", b"800")], chunks, default=1000)
         self.assertEqual(sent[0]["status"], 200)
+
+    def test_path_specific_limits(self):
+        """分享上传、管理端上传、JSON 接口各有各的上限。
+
+        基线问题：全局只有一个上限（管理端那个 8GB），分享访客也能灌 8GB
+        才被业务层拒 —— 而他的累计配额只有几百 MB。
+        """
+        rules = [("/api/s/upload", 5000), ("/api/upload", 20000), ("/api/s/", 100)]
+        mw = BodyLimitMiddleware(lambda *a: None, rules=rules, default=50)
+        self.assertEqual(mw.limit_for("/api/s/upload"), 5000)
+        self.assertEqual(mw.limit_for("/api/upload"), 20000)
+        self.assertEqual(mw.limit_for("/api/s/jobs"), 100)
+        self.assertEqual(mw.limit_for("/api/jobs"), 50)      # 兜底
+        self.assertEqual(mw.limit_for("/"), 50)
+
+    def test_share_upload_rejected_earlier_than_admin(self):
+        """/api/s/upload 的上限必须比 /api/upload 小，否则修了等于没修。"""
+        from backend.main import _BODY_RULES, _BODY_DEFAULT
+        mw = BodyLimitMiddleware(lambda *a: None, rules=_BODY_RULES, default=_BODY_DEFAULT)
+        share = mw.limit_for("/api/s/upload")
+        admin = mw.limit_for("/api/upload")
+        js = mw.limit_for("/api/jobs")
+        self.assertLess(share, admin, "分享入口的上限不该跟管理端一样大")
+        self.assertLess(js, share, "JSON 接口不该按上传上限放行")
+        self.assertGreaterEqual(share, 100 * 1024 * 1024, "分享上限别小到正常漫画都传不上")
 
     def test_non_http_scope_untouched(self):
         """非 HTTP 的 scope（比如 lifespan）原样放行，不加任何限制。"""
@@ -249,16 +281,19 @@ class BodyLimitTests(unittest.TestCase):
         async def send(msg):
             sent.append(msg)
 
-        asyncio.run(BodyLimitMiddleware(app, limit=10)({"type": "lifespan"}, None, send))
+        asyncio.run(BodyLimitMiddleware(app, rules=[], default=10)(
+            {"type": "lifespan"}, None, send))
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]["status"], 204)
 
 
 class LatestTagTests(unittest.TestCase):
-    """P2-01：手动 dev 构建不许覆盖 latest。
+    """P2-01：只有正式 git tag 才能更新 latest。
 
-    改之前 workflow 里 tags 硬编码 `:latest`，谁手动发一次开发镜像，
-    所有 `docker pull :latest` 的用户就拿到未发布代码。
+    两轮修下来才到位：
+      第一版   tags 里写死 :latest          → 手动 dev 也覆盖
+      第二版   判断 TAGGED != "dev"          → 手动输入 test123 还是覆盖
+      现在     判断触发来源是不是 refs/tags/v*
     """
 
     def setUp(self):
@@ -270,16 +305,76 @@ class LatestTagTests(unittest.TestCase):
                       "tags 应该引用条件生成的 latest")
 
     def test_no_hardcoded_latest_in_tags(self):
-        # tags 块里不能再出现写死的 ${{ env.IMAGE }}:latest
         m = re.search(r"tags:\s*\|\n((?:\s+\$\{\{.*\n)+)", self.yml)
         self.assertIsNotNone(m, "找不到 tags 块")
         self.assertNotIn("env.IMAGE }}:latest", m.group(1),
-                         "tags 里又写死了 :latest，dev 会覆盖正式镜像")
+                         "tags 里又写死了 :latest，手动构建会覆盖正式镜像")
 
-    def test_dev_branch_clears_latest(self):
-        self.assertIn('if [ "$TAGGED" = "dev" ]', self.yml,
-                      "缺少 dev 时不推 latest 的判断")
+    def test_latest_gated_on_git_tag_not_on_name(self):
+        """判断依据必须是 GITHUB_REF，不是标签名等于什么。"""
+        self.assertIn('[[ "${GITHUB_REF}" == refs/tags/v* ]]', self.yml,
+                      "latest 应该由「是不是正式 tag 触发」决定")
+        # 反例：按名字判断的写法不能再回来
+        self.assertNotIn('if [ "$TAGGED" = "dev" ]', self.yml,
+                         "又回到按标签名判断了 —— 手动输入 test123 会漏过去")
         self.assertIn('echo "latest=" >> "$GITHUB_OUTPUT"', self.yml)
+
+
+class OutputLimitTests(unittest.TestCase):
+    """P1-02：产物单文件上限。
+
+    补充说明：缓存配额管的是「总共占多少」，这个是「一次别写出个巨无霸」。
+    两者独立 —— 配额够也可能被单文件上限拦下。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.c = TestClient(app)
+
+    def test_share_limit_stricter_than_admin(self):
+        self.assertLess(jobs.SHARE_OUTPUT_MB, jobs.MAX_OUTPUT_MB,
+                        "分享访客的产物上限应该比管理端小")
+
+    def test_limit_picked_by_token(self):
+        self.assertEqual(jobs.output_limit_mb("tok-1"), jobs.SHARE_OUTPUT_MB)
+        self.assertEqual(jobs.output_limit_mb(""), jobs.MAX_OUTPUT_MB)
+
+    def test_oversized_output_dropped_and_failed(self):
+        """真跑一次转换：小文本转出超过上限的 PDF，必须删产物并判失败。"""
+        import time
+        para = "把产物撑大的正文内容，重复很多遍。\n"
+        payload = (para * (700_000 // len(para.encode()))).encode()
+        up = self.c.post("/api/upload", files=_mp("超大 产物.txt", payload), headers=HDR)
+        self.assertEqual(up.status_code, 200, up.text)
+        fa = up.json()["files"][0]
+
+        old = jobs.MAX_OUTPUT_MB
+        jobs.MAX_OUTPUT_MB = 1          # 产物会到 ~2MB，必超
+        try:
+            r = self.c.post("/api/jobs", headers=HDR, json={
+                "files": [{"file_id": fa["file_id"], "name": fa["name"], "size": fa["size"]}],
+                "target": "pdf", "options": {}})
+            self.assertEqual(r.status_code, 200, r.text)
+            jid = r.json()["job_id"]
+            st = None
+            for _ in range(300):
+                st = self.c.get(f"/api/jobs/{jid}", headers=HDR).json()
+                if st.get("status") == "done":
+                    break
+                time.sleep(0.1)
+        finally:
+            jobs.MAX_OUTPUT_MB = old
+
+        it = st["items"][0]
+        self.assertEqual(it["status"], "fail", "产物超限应该判失败")
+        self.assertIn("超过单文件上限", it["error"])
+        self.assertEqual(it["out"], "", "超限产物不能留在任务记录里")
+        self.assertEqual(it["out_size"], 0)
+
+        # 源文件必须还在 —— 失败不能牵连上传的源文件
+        srcs = list((_TMP / "uploads").glob("*"))
+        self.assertTrue(any(p.suffix == ".txt" for p in srcs),
+                        "源文件被牵连删掉了")
 
 
 if __name__ == "__main__":

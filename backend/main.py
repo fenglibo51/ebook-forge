@@ -70,7 +70,7 @@ async def lifespan(_app: FastAPI):
                 pass
 
 
-app = FastAPI(title="EbookForge", version="1.0.2", docs_url="/api/docs",
+app = FastAPI(title="EbookForge", version="1.0.3", docs_url="/api/docs",
               lifespan=lifespan)
 
 
@@ -83,24 +83,35 @@ app = FastAPI(title="EbookForge", version="1.0.2", docs_url="/api/docs",
 # 上限取「单次上传总量」再多留 64MB，给 multipart 边界和协议开销。
 
 class BodyLimitMiddleware:
-    """两层拦：有 Content-Length 直接比；chunked 或客户端撒谎就边收边数。
+    """按路径设不同上限，在路由和落盘之前就挡。
 
     ⚠️ 超限时**不能从 receive() 抛异常**。实测过：FastAPI 的 routing.py
     把 body 解析阶段的任何非 HTTPException 一律转成
     `400 There was an error parsing the body`，状态码就不对了；而抛
     HTTPException 也没用 —— 这个中间件挂在 ExceptionMiddleware 外层，
     抛出去会变成 500。所以在 send 层把响应改写成 413。
+
+    为什么不能用一个全局上限：管理端上传确实需要几个 GB，但分享访客的
+    累计配额只有几百 MB —— 给访客开 8 GB 的 body 上限，等于让公网随便
+    往这里灌 8 GB 才被业务层拒绝。所以按路径分开配。
     """
 
-    def __init__(self, app, limit: int) -> None:
+    def __init__(self, app, rules, default: int) -> None:
         self.app = app
-        self.limit = limit
+        self.rules = list(rules)        # [(路径前缀, 字节上限)]，按顺序匹配，先中先得
+        self.default = default
 
-    def _payload(self) -> bytes:
-        return ('{"detail":"请求体太大，上限 %d MB"}' % (self.limit >> 20)).encode()
+    def limit_for(self, path: str) -> int:
+        for prefix, limit in self.rules:
+            if path.startswith(prefix):
+                return limit
+        return self.default
 
-    async def _reject(self, send) -> None:
-        body = self._payload()
+    def _payload(self, limit: int) -> bytes:
+        return ('{"detail":"请求体太大，上限 %d MB"}' % (limit >> 20)).encode()
+
+    async def _reject(self, send, limit: int) -> None:
+        body = self._payload(limit)
         await send({"type": "http.response.start", "status": 413,
                     "headers": [(b"content-type", b"application/json; charset=utf-8"),
                                 (b"content-length", str(len(body)).encode()),
@@ -111,6 +122,7 @@ class BodyLimitMiddleware:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
 
+        limit = self.limit_for(scope.get("path", ""))
         declared: int | None = None
         for k, v in scope.get("headers") or ():
             if k.lower() == b"content-length":
@@ -119,8 +131,8 @@ class BodyLimitMiddleware:
                 except (TypeError, ValueError):
                     declared = None
         # ① 声明就超标：一个字节的 body 都不收，直接回 413
-        if declared is not None and declared > self.limit:
-            return await self._reject(send)
+        if declared is not None and declared > limit:
+            return await self._reject(send, limit)
 
         received = 0
         too_large = False
@@ -131,13 +143,13 @@ class BodyLimitMiddleware:
             msg = await receive()
             if msg["type"] == "http.request":
                 received += len(msg.get("body") or b"")
-                if received > self.limit:
+                if received > limit:
                     too_large = True
                     if not replied:
                         # 直接用原始 send 把 413 发出去，不等框架 ——
                         # 框架收到 disconnect 会自己抛 400，那就抢不到状态码了。
                         replied = True
-                        await self._reject(send)
+                        await self._reject(send, limit)
                     # 告诉框架「对端没了」，它就会停手不再读 body
                     return {"type": "http.disconnect"}
             return msg
@@ -151,9 +163,9 @@ class BodyLimitMiddleware:
                 return
             replied = True
             if msg["type"] == "http.response.start":
-                await self._reject(send)
+                await self._reject(send, limit)
             elif msg["type"] == "http.response.body":
-                await self._reject(send)
+                await self._reject(send, limit)
 
         try:
             await self.app(scope, _receive, _send)
@@ -165,12 +177,29 @@ class BodyLimitMiddleware:
             # 再让它变成 500 没意义 —— 这里吞掉。
         # ② 框架因为 disconnect 什么都没发，我们补上 413
         if too_large and not replied:
-            await self._reject(send)
+            await self._reject(send, limit)
 
-# 上限取「单次上传总量」再多留 64MB，给 multipart 边界和协议开销。
+# ── 请求体上限：按路径分开配 ───────────────────────────────────────────────
+# 管理端上传确实需要几个 GB；但分享访客的累计配额只有几百 MB，给他开 8 GB
+# 的 body 上限等于让公网随便灌 8 GB 才被业务层拒。JSON 接口更不需要大 body。
 # 注册放在文件末尾（admin_guard 之后）—— Starlette 后加的中间件在最外层，
-# 我们需要它比 admin_guard 更外，否则框架自己抛的 400 会先占住响应。
-_BODY_LIMIT_MB = int(os.environ.get("EBOOKFORGE_MAX_UPLOAD_MB", "8192")) + 64
+# 需要它比 admin_guard 更外，否则框架自己抛的 400 会先占住响应。
+_MB = 1024 * 1024
+
+# 管理端上传：单次上传总量 + 64MB 的 multipart 开销
+_ADMIN_UPLOAD_MB = int(os.environ.get("EBOOKFORGE_MAX_UPLOAD_MB", "8192")) + 64
+# 分享上传：超过这条链接的累计配额就必然被拒，body 再大也没意义，多留 8MB 开销
+_SHARE_UPLOAD_MB = int(os.environ.get("EBOOKFORGE_SHARE_QUOTA_MB", "512")) + 8
+# JSON 接口（建任务、改设置这些）：4MB 绰绰有余
+_JSON_MB = int(os.environ.get("EBOOKFORGE_MAX_JSON_MB", "4"))
+
+_BODY_RULES = [
+    ("/api/s/upload", _SHARE_UPLOAD_MB * _MB),     # 分享访客上传
+    ("/api/upload", _ADMIN_UPLOAD_MB * _MB),       # 管理端上传
+    ("/api/s/", _JSON_MB * _MB),                   # 分享端其余接口
+    ("/api/", _JSON_MB * _MB),                     # 管理端其余接口
+]
+_BODY_DEFAULT = _JSON_MB * _MB                     # 静态资源只 GET，留个小的兜底
 
 
 # ── 管理令牌 ──────────────────────────────────────────────────────────────
@@ -286,7 +315,7 @@ def main() -> None:
 
 
 # 最后注册 → 最外层。见上面 BodyLimitMiddleware 的说明。
-app.add_middleware(BodyLimitMiddleware, limit=_BODY_LIMIT_MB * 1024 * 1024)
+app.add_middleware(BodyLimitMiddleware, rules=_BODY_RULES, default=_BODY_DEFAULT)
 
 
 if __name__ == "__main__":
