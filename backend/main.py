@@ -19,12 +19,27 @@ if str(ROOT) not in sys.path:
 from fastapi import FastAPI                                    # noqa: E402
 from fastapi.responses import JSONResponse                     # noqa: E402
 from fastapi.staticfiles import StaticFiles                    # noqa: E402
+from contextlib import asynccontextmanager                     # noqa: E402
 
-from .api import router                                        # noqa: E402
+from .api import cleanup_uploads, router                       # noqa: E402
 
 FRONTEND = ROOT / "frontend"
 
-app = FastAPI(title="EbookForge", version="0.1.0", docs_url="/api/docs")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # 启动时清一次过期的上传副本（24h TTL）
+    try:
+        r = cleanup_uploads()
+        if r["removed"]:
+            print(f"[cache] 启动清理：{r['removed']} 个过期上传副本，释放 {r['freed'] / 1048576:.1f} MB")
+    except Exception as e:
+        print(f"[cache] 启动清理失败：{e}")
+    yield
+
+
+app = FastAPI(title="EbookForge", version="0.1.0", docs_url="/api/docs",
+              lifespan=lifespan)
 
 
 @app.exception_handler(Exception)

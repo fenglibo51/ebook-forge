@@ -1,0 +1,34 @@
+/* ==========================================================================
+   弹窗（服务器目录浏览器）
+   ========================================================================== */
+.modal{position:fixed;inset:0;z-index:80;display:none;align-items:center;justify-content:center;padding:32px}
+.modal.show{display:flex}
+.modal-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.34);backdrop-filter:blur(1px)}
+.modal-box{
+  position:relative;z-index:1;width:min(860px,100%);max-height:min(760px,86vh);
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);
+  box-shadow:var(--shadow);display:flex;flex-direction:column;overflow:hidden;
+}
+.modal-hd{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--line)}
+.modal-hd h3{font-size:15px;font-weight:600;margin:0}
+.modal-x{width:30px;height:30px;border-radius:var(--r-sm);display:grid;place-items:center;color:var(--ink-3)}
+.modal-x:hover{background:var(--hover);color:var(--ink)}
+.modal-tools{display:flex;align-items:center;gap:10px;padding:12px 22px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.modal-body{flex:1;overflow-y:auto;padding:6px 22px 14px}
+.modal-ft{display:flex;align-items:center;gap:12px;padding:14px 22px;border-top:1px solid var(--line);background:var(--surface-2)}
+.modal-ft .cnt{font-size:13px;color:var(--ink-2)}
+.modal-ft .cnt b{font-weight:600;color:var(--ink)}
+.modal-ft .grow{flex:1}
+
+/* 弹窗内的文件行（比书库页更紧凑） */
+.modal-body .frow{padding:9px 6px}
+.modal-body .frow .fx{width:26px;height:26px;flex:0 0 26px;font-size:8.5px}
+.modal-body .frow .nm{font-size:13.5px}
+.modal-body .frow .sz{width:74px;font-size:12.5px}
+.modal-body .frow.disabled{opacity:.42}
+.modal-body .frow.disabled .nm{cursor:not-allowed}
+
+@media (max-width:760px){
+  .modal{padding:0;align-items:flex-end}
+  .modal-box{max-height:92vh;border-radius:var(--r-lg) var(--r-lg) 0 0}
+}

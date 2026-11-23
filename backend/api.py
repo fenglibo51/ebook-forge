@@ -18,6 +18,57 @@ router = APIRouter(prefix="/api")
 UPLOAD_DIR = store.DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+# 上传的临时文件保留 24 小时，超时自动清理
+UPLOAD_TTL = int(os.environ.get("EBOOKFORGE_UPLOAD_TTL", 86400))
+
+
+def cleanup_uploads(max_age: float = UPLOAD_TTL) -> dict[str, Any]:
+    """删掉超过 TTL 的上传副本。源文件在用户设备上，删了不心疼。"""
+    import time
+    now = time.time()
+    removed = 0
+    freed = 0
+    for p in UPLOAD_DIR.iterdir():
+        if not p.is_file():
+            continue
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        if now - st.st_mtime > max_age:
+            try:
+                p.unlink()
+                removed += 1
+                freed += st.st_size
+            except OSError:
+                pass
+    return {"removed": removed, "freed": freed}
+
+
+def cache_info() -> dict[str, Any]:
+    import time
+    now = time.time()
+    files = 0
+    size = 0
+    oldest_age = 0.0
+    for p in UPLOAD_DIR.iterdir():
+        if not p.is_file():
+            continue
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        files += 1
+        size += st.st_size
+        oldest_age = max(oldest_age, now - st.st_mtime)
+    return {
+        "files": files,
+        "size": size,
+        "oldest_age": int(oldest_age),
+        "ttl": UPLOAD_TTL,
+        "dir": str(UPLOAD_DIR),
+    }
+
 # 允许浏览器下载的目录（转换输出只可能落在这些地方）
 def _download_roots() -> list[Path]:
     s = store.load_settings()
@@ -173,6 +224,7 @@ class JobIn(BaseModel):
 def create_job(body: JobIn) -> dict[str, Any]:
     if not body.files:
         raise HTTPException(400, "没有文件")
+    cleanup_uploads()                      # 建任务时顺手清一次过期副本
     for f in body.files:
         p = Path(f.path).expanduser()
         if not p.exists():
@@ -214,6 +266,26 @@ def get_settings() -> dict[str, Any]:
 @router.put("/settings")
 def put_settings(patch: dict[str, Any]) -> dict[str, Any]:
     return store.save_settings(patch)
+
+
+# ── 缓存（上传的临时副本） ────────────────────────────────────────────────
+
+@router.get("/cache")
+def get_cache() -> dict[str, Any]:
+    return cache_info()
+
+
+@router.delete("/cache")
+def clear_cache() -> dict[str, Any]:
+    """手动清空。只删上传副本，不碰用户设备上的原文件、也不碰书库。"""
+    info = cache_info()
+    for p in UPLOAD_DIR.iterdir():
+        if p.is_file():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    return {"removed": info["files"], "freed": info["size"]}
 
 
 # ── 下载 ──────────────────────────────────────────────────────────────────

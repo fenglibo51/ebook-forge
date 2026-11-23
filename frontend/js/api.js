@@ -50,6 +50,9 @@ const API = (() => {
     history(limit = 200) { return get('/api/history?limit=' + limit); },
     clearHistory() { return del('/api/history'); },
 
+    cache() { return get('/api/cache'); },
+    cacheClear() { return del('/api/cache'); },
+
     settings() { return get('/api/settings'); },
     saveSettings(patch) { return putJSON('/api/settings', patch); },
 

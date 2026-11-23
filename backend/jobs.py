@@ -141,13 +141,25 @@ def _run(job: Job) -> None:
             # 删源文件：只在转换成功后做，失败绝不动源文件
             if job.options.get("delete_source"):
                 src_p = Path(item.src)
-                # 输出和源是同一个文件时绝不删（防手滑把自己删了）
+                # ① 上传的副本不删 —— 那是给用户下载用的临时文件，
+                #    删了源目录里的原件也还在设备上，纯属自找麻烦
+                from .api import UPLOAD_DIR
+                is_upload = False
+                try:
+                    src_p.resolve().relative_to(UPLOAD_DIR.resolve())
+                    is_upload = True
+                except (ValueError, OSError):
+                    is_upload = False
+                # ② 输出和源是同一个文件时绝不删（防手滑把自己删了）
                 same = False
                 try:
                     same = Path(item.out).resolve() == src_p.resolve()
                 except OSError:
                     same = False
-                if same:
+
+                if is_upload:
+                    pass                      # 副本，不碰
+                elif same:
                     item.note = _join_note(item.note, "输出与源同路径，未删除源文件")
                 else:
                     try:

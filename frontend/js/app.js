@@ -183,8 +183,12 @@
     const host = $('#file-list');
     host.innerHTML = queue.map((f, i) => {
       const ext = (f.name.split('.').pop() || '').toUpperCase();
+      const badge = f.source === 'server'
+        ? '<span class="src-badge sv">服务器</span>'
+        : '<span class="src-badge up">上传</span>';
       return `<div class="file-row">
         <div class="fx">${esc(ext)}</div>
+        ${badge}
         <div class="fname">${esc(f.name)}</div>
         <div class="fmeta">${fmtSize(f.size)}</div>
         <button class="rm" data-i="${i}" title="移除">✕</button>
@@ -198,6 +202,15 @@
 
   function updateGoState() {
     $('#go').disabled = !queue.length || !target || !!jobId;
+    const hasServer = queue.some(f => f.source === 'server');
+    const opts = $('#jobOpts');
+    if (opts) opts.style.display = hasServer ? '' : 'none';
+    const on = $('#outMode button.on');
+    const custom = on && on.dataset.val === 'custom';
+    const hint = $('#outModeHint');
+    if (hint) hint.textContent = custom
+      ? '输出到设置页里填的输出目录；没填则退回源文件同目录。'
+      : '转换结果和源文件放在一起，重名自动加 _1、_2。';
   }
 
   async function addFiles(fileList) {
@@ -206,7 +219,7 @@
     toast(`正在上传 ${files.length} 个文件…`);
     try {
       const r = await API.upload(files);
-      queue.push(...r.files);
+      queue.push(...r.files.map(f => ({ ...f, source: 'upload' })));
       renderFiles(); renderQueue(); updateFmtState();
       toast(`已加入 ${r.files.length} 个文件`);
     } catch (e) {
@@ -253,15 +266,27 @@
 
   const ST_ICON = { ok: ['ok', '✓'], lossy: ['warn', '!'], fail: ['fail', '✕'], running: ['run', '⋯'], pending: ['run', '·'] };
 
-  function logRow(name, status, meta, metaWarn) {
+  function logRow(name, status, meta, metaWarn, out) {
     const [cls, ico] = ST_ICON[status] || ST_ICON.pending;
+    const btn = out
+      ? `<button class="dlbtn" data-dl="${esc(out)}" title="下载转换结果">下载</button>`
+      : '';
     return `<div class="log-row">
       <span class="st ${cls}">${ico}</span>
       <div class="log-main">
         <div class="log-name">${esc(name)}</div>
         <div class="log-meta${metaWarn ? ' warn' : ''}">${esc(meta)}</div>
       </div>
+      ${btn}
     </div>`;
+  }
+
+  function bindDownloads(scope) {
+    $$('.dlbtn[data-dl]', scope || document).forEach(b => {
+      if (b.dataset.bound) return;
+      b.dataset.bound = '1';
+      b.addEventListener('click', () => { window.location.href = API.downloadUrl(b.dataset.dl); });
+    });
   }
 
   function itemMeta(it) {
@@ -291,7 +316,12 @@
   $('#go').addEventListener('click', async () => {
     if (!queue.length || jobId) return;
     try {
-      const r = await API.createJob(queue, target, optFor());
+      const outMode = $('#outMode button.on')?.dataset.val || 'same';
+      const opts = optFor({
+        delete_source: $('#delSourceJob').checked,
+        output_dir: outMode === 'custom' ? ((settingsCache && settingsCache.output_dir) || '') : ''
+      });
+      const r = await API.createJob(queue, target, opts);
       jobId = r.job_id;
       updateGoState();
       $('#progressCard').style.display = '';
@@ -304,8 +334,10 @@
         $('#progFill').style.width = pct + '%';
         $('#progStats').textContent = `${s.done} / ${s.total}` + (s.elapsed ? ` · 已用 ${s.elapsed} 秒` : '');
         $('#progLog').innerHTML = s.items.map(it =>
-          logRow(`${it.name} → ${s.target.toUpperCase()}`, it.status, itemMeta(it), it.status === 'lossy')
+          logRow(`${it.name} → ${s.target.toUpperCase()}`, it.status, itemMeta(it),
+                 it.status === 'lossy', it.out)
         ).join('');
+        bindDownloads($('#progLog'));
       });
       if (st) finishJob(st, 'convert');
     } catch (e) {
@@ -345,6 +377,109 @@
     }
     toast(`完成：成功 ${ok} / 有损 ${lossy} / 失败 ${fail}`,
       fail ? 'fail' : lossy ? 'warn' : 'ok');
+  }
+
+
+  /* -------- 服务器目录浏览器（弹窗） -------- */
+  let browsePath = '';
+  let browseItems = [];
+  const browseSel = new Map();          // rel路径 → {name, size}
+
+  async function loadBrowse(path = '') {
+    const host = $('#browseList');
+    host.innerHTML = '<div class="empty">加载中…</div>';
+    try {
+      const r = await API.library(path);
+      browsePath = r.path;
+      browseItems = r.items;
+      $('#browseCrumbs').innerHTML = r.crumbs.map((c, i) => {
+        const last = i === r.crumbs.length - 1;
+        const el = last ? `<span class="cur">${esc(c.name)}</span>`
+                        : `<a href="#" data-p="${esc(c.path)}">${esc(c.name)}</a>`;
+        return el + (last ? '' : '<span class="sep">/</span>');
+      }).join('');
+      $$('#browseCrumbs a').forEach(a => a.addEventListener('click', e => {
+        e.preventDefault(); loadBrowse(a.dataset.p);
+      }));
+      const fmts = [...new Set(r.items.filter(i => !i.is_dir && i.fmt).map(i => i.fmt))].sort();
+      $('#browseFilter').innerHTML = '<option value="">全部格式</option>' +
+        fmts.map(f => `<option value="${esc(f)}">${esc(f.toUpperCase())}</option>`).join('');
+      renderBrowse();
+    } catch (e) {
+      host.innerHTML = `<div class="empty">${esc(e.message || e)}</div>`;
+    }
+  }
+
+  function renderBrowse() {
+    const f = $('#browseFilter').value;
+    const rows = browseItems.filter(it => !f || it.fmt === f);
+    if (!rows.length) {
+      $('#browseList').innerHTML = '<div class="empty">这个目录里没有可用的文件</div>';
+      return;
+    }
+    $('#browseList').innerHTML = rows.map(it => {
+      const rel = (browsePath ? browsePath + '/' : '') + it.name;
+      return `<div class="frow">
+        ${it.is_dir ? '<span style="width:16px;flex:0 0 16px"></span>'
+                    : `<input type="checkbox" class="bcbx" data-rel="${esc(rel)}" data-name="${esc(it.name)}" data-size="${it.size}" ${browseSel.has(rel) ? 'checked' : ''}>`}
+        <div class="fx">${it.is_dir ? 'DIR' : esc((it.fmt || '?').toUpperCase())}</div>
+        <div class="nm${it.is_dir ? ' dir' : ''}" data-rel="${esc(rel)}">${esc(it.name)}</div>
+        <div class="sz">${it.is_dir ? '—' : fmtSize(it.size)}</div>
+        <div class="tm">${fmtTime(it.mtime)}</div>
+      </div>`;
+    }).join('');
+
+    $$('#browseList .nm.dir').forEach(n => n.addEventListener('click', () => loadBrowse(n.dataset.rel)));
+    $$('#browseList .bcbx').forEach(b => b.addEventListener('change', () => {
+      if (b.checked) browseSel.set(b.dataset.rel, { name: b.dataset.name, size: +b.dataset.size });
+      else browseSel.delete(b.dataset.rel);
+      $('#browseCount').textContent = browseSel.size;
+      $('#browseAdd').disabled = browseSel.size === 0;
+    }));
+  }
+
+  function openBrowser() {
+    browseSel.clear();
+    $('#browseCount').textContent = '0';
+    $('#browseAdd').disabled = true;
+    $('#browseModal').classList.add('show');
+    loadBrowse('');
+  }
+  function closeBrowser() { $('#browseModal').classList.remove('show'); }
+
+  if ($('#pickServer')) {
+    $('#pickServer').addEventListener('click', openBrowser);
+    $('#browseClose').addEventListener('click', closeBrowser);
+    $('#browseCancel').addEventListener('click', closeBrowser);
+    $('#browseBackdrop').addEventListener('click', closeBrowser);
+    $('#browseFilter').addEventListener('change', renderBrowse);
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && $('#browseModal').classList.contains('show')) closeBrowser();
+    });
+
+    $('#browseAdd').addEventListener('click', () => {
+      const root = ((settingsCache && settingsCache.library_root) || '').replace(/\/+$/, '');
+      let added = 0;
+      for (const [rel, info] of browseSel) {
+        const abs = root ? `${root}/${rel}` : rel;
+        if (queue.some(f => f.path === abs)) continue;
+        queue.push({ path: abs, name: info.name, size: info.size, source: 'server' });
+        added++;
+      }
+      closeBrowser();
+      renderFiles(); renderQueue(); updateFmtState();
+      if (added) toast(`已加入 ${added} 个服务器文件`);
+      else toast('这些文件已经在队列里了', 'warn');
+    });
+  }
+
+  // 输出位置单选（独立类名，别和设置页的 .seg 全局逻辑搅在一起）
+  if ($('#outMode')) {
+    $$('#outMode button').forEach(b => b.addEventListener('click', () => {
+      $$('#outMode button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      updateGoState();
+    }));
   }
 
   /* ================= 书库页 ================= */
@@ -477,8 +612,10 @@
         $('#libFill').style.width = (s.total ? s.done / s.total * 100 : 0) + '%';
         $('#libStats').textContent = `${s.done} / ${s.total}` + (s.elapsed ? ` · ${s.elapsed} 秒` : '');
         $('#libLog').innerHTML = s.items.map(it =>
-          logRow(`${it.name} → ${s.target.toUpperCase()}`, it.status, itemMeta(it), it.status === 'lossy')
+          logRow(`${it.name} → ${s.target.toUpperCase()}`, it.status, itemMeta(it),
+                 it.status === 'lossy', it.out)
         ).join('');
+        bindDownloads($('#libLog'));
       });
       if (st) {
         finishJob(st, 'library');
@@ -568,11 +705,26 @@
   /* ================= 设置页 ================= */
   let settingsCache = null;
 
+  async function loadCacheStat() {
+    try {
+      const c = await API.cache();
+      const age = c.oldest_age > 3600
+        ? `最老的 ${Math.round(c.oldest_age / 3600)} 小时前`
+        : c.oldest_age > 60 ? `最老的 ${Math.round(c.oldest_age / 60)} 分钟前` : '';
+      $('#cacheStat').textContent = c.files
+        ? `${c.files} 个文件 · ${fmtSize(c.size)}${age ? ' · ' + age : ''} · 超 ${Math.round(c.ttl / 3600)} 小时自动清理`
+        : '缓存是空的';
+    } catch (e) {
+      const el = $('#cacheStat'); if (el) el.textContent = String(e.message || e);
+    }
+  }
+
   async function loadSettings() {
     try {
       settingsCache = await API.settings();
       fillSettings(settingsCache);
       loadCaps();
+      loadCacheStat();
     } catch (e) {
       toast('读取设置失败：' + (e.message || e), 'fail');
     }
@@ -644,6 +796,17 @@
     } catch { /* 能力表拿不到不影响用 */ }
   }
 
+  $('#clearCache').addEventListener('click', async () => {
+    if (!confirm('清空服务器上的上传副本？\n\n只删临时文件，不碰你设备上的原文件和书库。')) return;
+    try {
+      const r = await API.cacheClear();
+      toast(`已清空 ${r.removed} 个文件，释放 ${fmtSize(r.freed)}`);
+      loadCacheStat();
+    } catch (e) {
+      toast('清空失败：' + (e.message || e), 'fail');
+    }
+  });
+
   $('#clearHist').addEventListener('click', async () => {
     if (!confirm('清空全部转换记录？')) return;
     try {
@@ -656,9 +819,10 @@
 
   /* ================= 启动 ================= */
   (async () => {
-    // 书库根的绝对路径：让后端告诉我们（下载/转换都需要绝对路径）
+    // 启动就把设置读进来：拼服务器文件绝对路径、传给任务都要用
     try {
       const s = await API.settings();
+      settingsCache = s;
       libRootPath = s.library_root || '';
     } catch { }
     updateFmtState();

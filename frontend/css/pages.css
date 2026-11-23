@@ -3,6 +3,19 @@
    ========================================================================== */
 
 /* ============ 转换页 ============ */
+.opt-row{display:flex;align-items:center;gap:12px;font-size:13px;color:var(--ink-2);margin-bottom:4px}
+.opt-row .opt-lab{flex:0 0 auto;color:var(--ink-3);font-size:12.5px}
+.seg-inline{display:inline-flex;border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden}
+.seg-inline button{
+  padding:7px 12px;font-size:12.5px;color:var(--ink-2);background:var(--surface);
+  border-right:1px solid var(--line);transition:background var(--t),color var(--t);
+}
+.seg-inline button:last-child{border-right:none}
+.seg-inline button:not(.on):hover{background:var(--hover);color:var(--ink)}
+.seg-inline button.on{background:var(--ink);color:var(--on-ink)}
+.src-badge{font-size:10.5px;font-weight:600;padding:1px 6px;border-radius:4px;letter-spacing:.02em;flex:0 0 auto}
+.src-badge.up{background:var(--hover);color:var(--ink-3)}
+.src-badge.sv{background:var(--ok-bg);color:var(--ok)}
 .grid-2{
   display:grid;grid-template-columns:minmax(0,1fr) clamp(420px,27%,600px);
   gap:clamp(18px,1.4vw,28px);margin-top:clamp(26px,2vw,38px);

@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="css/layout.css">
 <link rel="stylesheet" href="css/components.css">
 <link rel="stylesheet" href="css/pages.css">
+<link rel="stylesheet" href="css/modal.css">
 </head>
 <body>
 <div id="app">
@@ -69,10 +70,16 @@
             </div>
             <p class="drop-main">把电子书拖到这里</p>
             <p class="drop-sub">一次可以放多个，格式混着也行</p>
-            <button class="btn btn-primary" id="pick">
-              <svg viewBox="0 0 24 24"><path d="M12 16V4M12 4l-4 4M12 4l4 4"/><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
-              选择文件
-            </button>
+            <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+              <button class="btn btn-primary" id="pick">
+                <svg viewBox="0 0 24 24"><path d="M12 16V4M12 4l-4 4M12 4l4 4"/><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
+                选择文件
+              </button>
+              <button class="btn-ghost" id="pickServer" style="padding:11px 20px;border-radius:var(--r-pill);display:inline-flex;align-items:center;gap:8px">
+                <svg viewBox="0 0 24 24" width="16" height="16"><path d="M3 7a2 2 0 012-2h3.5l2 2H19a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>
+                从服务器选择
+              </button>
+            </div>
             <p class="drop-hint">EPUB · MOBI · AZW3 · PDF · TXT · DOCX · FB2 · CBZ · CBR · CB7 · CBC</p>
             <input type="file" id="file-input" multiple hidden>
           </div>
@@ -98,6 +105,19 @@
             <span class="meta" id="queueSize"></span>
           </div>
           <div class="queue" id="queue"></div>
+
+          <div id="jobOpts" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--line)">
+            <div class="opt-row">
+              <span class="opt-lab">输出位置</span>
+              <div class="seg-inline" id="outMode" style="flex:1">
+                <button data-val="same" class="on" style="flex:1">源文件同目录</button>
+                <button data-val="custom" style="flex:1">自定义目录</button>
+              </div>
+            </div>
+            <p class="hint" id="outModeHint" style="margin:6px 0 12px">转换结果和源文件放在一起，重名自动加 _1、_2。</p>
+            <label class="check" style="margin-bottom:4px"><input type="checkbox" id="delSourceJob"><span>转换成功后删除源文件（仅对服务器上的文件生效）</span></label>
+            <p class="hint" style="margin-top:6px">上传的文件在服务器上只是副本，删不删都不影响你设备上的原件。</p>
+          </div>
 
           <button class="btn btn-primary btn-block" id="go" disabled>开始转换</button>
           <div id="warnSlot"></div>
@@ -335,6 +355,14 @@
             <p>清理类操作，做了就回不去。</p>
           </div>
           <div class="field">
+            <div class="lab">临时文件缓存</div>
+            <div class="ctl">
+              <p class="hint" id="cacheStat" style="margin-top:0">读取中…</p>
+              <button class="btn-ghost" id="clearCache" style="margin-top:8px">清空缓存</button>
+              <p class="hint">从设备上传的文件会在服务器上留一份副本，<b>24 小时后自动清理</b>。这里可以手动提前清掉。只删副本，不碰你的原文件和书库。</p>
+            </div>
+          </div>
+          <div class="field">
             <div class="lab">历史记录</div>
             <div class="ctl">
               <button class="btn-ghost danger" id="clearHist">清空全部转换记录</button>
@@ -347,6 +375,31 @@
     </section>
 
   </main>
+</div>
+
+<!-- 服务器目录浏览器 -->
+<div class="modal" id="browseModal">
+  <div class="modal-backdrop" id="browseBackdrop"></div>
+  <div class="modal-box">
+    <div class="modal-hd">
+      <h3>从服务器选择文件</h3>
+      <button class="modal-x" id="browseClose" title="关闭">✕</button>
+    </div>
+    <div class="modal-tools">
+      <div class="crumbs" id="browseCrumbs"></div>
+      <span class="grow" style="flex:1"></span>
+      <select class="input input-sm" id="browseFilter"><option value="">全部格式</option></select>
+    </div>
+    <div class="modal-body">
+      <div id="browseList"><div class="empty">加载中…</div></div>
+    </div>
+    <div class="modal-ft">
+      <span class="cnt">已选 <b id="browseCount">0</b> 个</span>
+      <span class="grow"></span>
+      <button class="btn-ghost" id="browseCancel">取消</button>
+      <button class="btn btn-primary" id="browseAdd" disabled>加入队列</button>
+    </div>
+  </div>
 </div>
 
 <script src="js/api.js"></script>
