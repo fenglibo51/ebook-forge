@@ -362,8 +362,14 @@ def _pack_offsets(si: _StreamsInfo) -> list[int]:
     return offsets
 
 
-def read_all(path: str | Path) -> dict[str, bytes]:
-    """把 7z 里所有文件解出来 → {名字: 内容}。"""
+def read_all(path: str | Path, *,
+             max_total: int = 4 * 1024 ** 3,
+             max_entry: int = 256 * 1024 ** 2,
+             max_entries: int = 5000) -> dict[str, bytes]:
+    """把 7z 里所有文件解出来 → {名字: 内容}。
+
+    max_total / max_entry / max_entries：解压前按 7z 头里的声明大小拒绝炸弹包。
+    """
     path = Path(path)
     data = path.read_bytes()
     if not data.startswith(SIG):
@@ -411,6 +417,21 @@ def read_all(path: str | Path) -> dict[str, bytes]:
 
     if streams is None or not names:
         raise SevenZError("7z 里没有文件")
+
+    # ── 解压限制 ──────────────────────────────────────────────────────
+    # 7z 头里声明了每个 folder 的解压大小，解压前就能拒绝炸弹包。
+    # 之前没有这道检查：一个 100KB 的 7z 能声明解压出几十 GB，直接把内存吃干。
+    if len(names) > max_entries:
+        raise SevenZError(f"7z 里条目太多（{len(names)} > {max_entries}）")
+    declared = sum((f.unpack_sizes[-1] if f.unpack_sizes else 0)
+                   for f in streams.folders)
+    if declared > max_total:
+        raise SevenZError(
+            f"7z 声明解压后 {declared / 1048576:.0f} MB，超过上限 {max_total / 1048576:.0f} MB")
+    for s in streams.sub_sizes or []:
+        if s > max_entry:
+            raise SevenZError(
+                f"7z 里有单个条目声明 {s / 1048576:.0f} MB，超过单文件上限 {max_entry / 1048576:.0f} MB")
 
     pack_offsets = _pack_offsets(streams)
 

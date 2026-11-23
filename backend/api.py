@@ -19,6 +19,14 @@ router = APIRouter(prefix="/api")
 UPLOAD_DIR = store.DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+# ── 配额（都能用环境变量调） ──────────────────────────────────────────────
+MB = 1024 * 1024
+MAX_UPLOAD_MB = int(os.environ.get("EBOOKFORGE_MAX_UPLOAD_MB", "2048"))      # 单次上传总量
+MAX_FILE_MB = int(os.environ.get("EBOOKFORGE_MAX_FILE_MB", "1024"))          # 单文件
+MAX_FILES_UPLOAD = int(os.environ.get("EBOOKFORGE_MAX_FILES_UPLOAD", "50"))  # 单次文件数
+MAX_FILES_TASK = int(os.environ.get("EBOOKFORGE_MAX_FILES_TASK", "50"))      # 单任务文件数
+MAX_QUEUE = int(os.environ.get("EBOOKFORGE_MAX_QUEUE", "20"))                # 排队任务上限
+
 # 目录筛选扫描结果缓存：{(base, fmt): (时间戳, 目录集合, 是否截断)}
 _SCAN_CACHE: dict[tuple[str, str], tuple[float, set, bool, int]] = {}
 
@@ -139,7 +147,11 @@ def capabilities() -> dict[str, Any]:
 
 @router.post("/upload")
 async def upload(files: list[UploadFile]) -> dict[str, Any]:
+    if len(files) > MAX_FILES_UPLOAD:
+        raise HTTPException(413, f"一次最多传 {MAX_FILES_UPLOAD} 个文件，这次给了 {len(files)} 个")
+
     saved = []
+    total = 0
     for f in files:
         name = Path(f.filename or "unnamed").name.replace("\x00", "")
         if not name:
@@ -149,13 +161,32 @@ async def upload(files: list[UploadFile]) -> dict[str, Any]:
         while dest.exists():
             dest = UPLOAD_DIR / f"{Path(name).stem}_{n}{Path(name).suffix}"
             n += 1
-        with dest.open("wb") as out:
-            while chunk := await f.read(1 << 20):
-                out.write(chunk)
+        written = 0
+        try:
+            with dest.open("wb") as out:
+                # 边写边累计检查 —— 不只看 Content-Length，客户端可以撒谎
+                while chunk := await f.read(MB):
+                    written += len(chunk)
+                    total += len(chunk)
+                    if written > MAX_FILE_MB * MB:
+                        raise HTTPException(
+                            413, f"{name} 超过单文件上限 {MAX_FILE_MB} MB")
+                    if total > MAX_UPLOAD_MB * MB:
+                        raise HTTPException(
+                            413, f"本次上传总量超过上限 {MAX_UPLOAD_MB} MB")
+                    out.write(chunk)
+        except HTTPException:
+            # 超限就把写了一半的文件删掉，别留垃圾
+            try:
+                dest.unlink()
+            except OSError:
+                pass
+            raise
         saved.append({"path": str(dest), "name": dest.name, "size": dest.stat().st_size})
+
     if not saved:
         raise HTTPException(400, "没有收到文件")
-    return {"files": saved}
+    return {"files": saved, "total_size": total}
 
 
 # ── 书库 ──────────────────────────────────────────────────────────────────
@@ -297,7 +328,14 @@ class JobIn(BaseModel):
 def create_job(body: JobIn) -> dict[str, Any]:
     if not body.files:
         raise HTTPException(400, "没有文件")
+    if len(body.files) > MAX_FILES_TASK:
+        raise HTTPException(413, f"单个任务最多 {MAX_FILES_TASK} 个文件")
+    pending = jobs.pending_count()
+    if pending >= MAX_QUEUE:
+        raise HTTPException(429, f"排队任务已满（{pending}/{MAX_QUEUE}），等前面的跑完再提交")
+
     cleanup_uploads()                      # 建任务时顺手清一次过期副本
+    jobs.gc_old()                          # 顺手清内存里过期完成的任务
     for f in body.files:
         p = Path(f.path).expanduser()
         if not p.exists():

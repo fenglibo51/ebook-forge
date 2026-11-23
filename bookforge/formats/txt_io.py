@@ -114,8 +114,14 @@ def read(path) -> TextBook:
                     source_format="txt")
 
 
-def to_bytes(book: TextBook) -> bytes:
-    """TextBook → 纯文本。章节标题占一行，段落之间空一行。"""
+def to_bytes(book: TextBook, *, indent: bool = True) -> bytes:
+    """TextBook → 纯文本。章节标题占一行，段落之间空一行。
+
+    中文小说惯例是每段首行缩进 2 字符。读的时候 `strip()` 把缩进吃掉了，
+    写的时候必须补回来，否则 txt → txt 会静默把原文的缩进丢干净
+    （实测 28 字节变 26 字节，看着像"只是覆盖"，实际内容也变了）。
+    纯英文段落不加缩进，避免英文书多出奇怪的首行空格。
+    """
     out: list[str] = []
     for ch in book.chapters:
         if ch.title:
@@ -123,7 +129,17 @@ def to_bytes(book: TextBook) -> bytes:
             out.append("")
         for block in ch.blocks:
             para = getattr(block, "text", None)
-            if para:
-                out.append(para)
-                out.append("")
+            if not para:
+                continue
+            text = para
+            if indent and _needs_indent(para):
+                text = "\u3000\u3000" + para
+            out.append(text)
+            out.append("")
     return "\n".join(out).rstrip("\n").encode("utf-8") + b"\n"
+
+
+def _needs_indent(para: str) -> bool:
+    """中文段落才加缩进 —— 看开头几个字里有没有汉字。"""
+    head = para[:10]
+    return any("\u4e00" <= c <= "\u9fff" for c in head)

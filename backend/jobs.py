@@ -103,6 +103,12 @@ def get(job_id: str) -> Job | None:
     return _jobs.get(job_id)
 
 
+def pending_count() -> int:
+    """排队 + 正在跑的任务数，用来限制队列长度。"""
+    with _lock:
+        return sum(1 for j in _jobs.values() if j.status in ("pending", "running"))
+
+
 def _run(job: Job) -> None:
     from bookforge import convert
     from bookforge.formats import mobi as mobi_mod
@@ -141,7 +147,16 @@ def _run(job: Job) -> None:
             # 删源文件：只在转换成功后做，失败绝不动源文件
             if job.options.get("delete_source"):
                 src_p = Path(item.src)
-                # ① 上传的副本不删 —— 那是给用户下载用的临时文件，
+                # ① 先确认输出真的存在且有内容 —— 空文件/没写出来时删源等于丢数据
+                out_p = Path(item.out) if item.out else None
+                out_ok = False
+                if out_p is not None:
+                    try:
+                        out_ok = out_p.exists() and out_p.stat().st_size > 0
+                    except OSError:
+                        out_ok = False
+
+                # ② 上传的副本不删 —— 那是给用户下载用的临时文件，
                 #    删了源目录里的原件也还在设备上，纯属自找麻烦
                 from .api import UPLOAD_DIR
                 is_upload = False
@@ -150,14 +165,17 @@ def _run(job: Job) -> None:
                     is_upload = True
                 except (ValueError, OSError):
                     is_upload = False
-                # ② 输出和源是同一个文件时绝不删（防手滑把自己删了）
+
+                # ③ 输出和源是同一个文件时绝不删（防手滑把自己删了）
                 same = False
                 try:
-                    same = Path(item.out).resolve() == src_p.resolve()
+                    same = out_p is not None and out_p.resolve() == src_p.resolve()
                 except OSError:
                     same = False
 
-                if is_upload:
+                if not out_ok:
+                    item.note = _join_note(item.note, "输出文件不存在或为空，未删除源文件")
+                elif is_upload:
                     pass                      # 副本，不碰
                 elif same:
                     item.note = _join_note(item.note, "输出与源同路径，未删除源文件")
@@ -199,30 +217,52 @@ def _join_note(a: str, b: str) -> str:
 
 
 def _out_path(src: Path, target: str, name: str, output_dir: str = "") -> Path:
-    """算输出路径。
+    """算输出路径。**保证结果永远不会是源文件本身。**
 
-    output_dir 为空 → 和源文件放一起（覆盖前会加序号，绝不覆盖原件）
+    output_dir 为空 → 和源文件放一起
     output_dir 有值 → 统一收进去，目录不存在就建
+    任何情况下撞上源文件 → 加 _1、_2 换名
+
+    ⚠️ 早先的写法是 `while out.exists() and out.resolve() != src.resolve()`：
+    当目标路径和源路径**完全相同时**，循环条件为假直接返回源路径，
+    于是同格式转换（txt→txt、pdf→pdf）就把源文件覆盖了。
+    实测 txt→txt 不但覆盖，内容还被改写（全角缩进被吃掉，28 字节变 26 字节）。
+    现在改成：只要候选路径等于源文件，就算"已占用"，照样换名。
     """
-    stem = src.stem
+    folder: Path | None = None
     if output_dir.strip():
         folder = Path(output_dir).expanduser()
         try:
             folder.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             raise RuntimeError(f"输出目录不可用：{folder}（{e.strerror or e}）") from e
-        out = folder / f"{stem}.{target}"
-    else:
-        out = src.with_name(f"{stem}.{target}")
 
-    n = 1
-    while out.exists() and out.resolve() != src.resolve():
-        if output_dir.strip():
-            out = Path(output_dir).expanduser() / f"{stem}_{n}.{target}"
-        else:
-            out = src.with_name(f"{stem}_{n}.{target}")
+    stem = src.stem
+    try:
+        src_resolved = src.resolve()
+    except OSError:
+        src_resolved = src
+
+    def candidate(n: int) -> Path:
+        nm = f"{stem}.{target}" if n == 0 else f"{stem}_{n}.{target}"
+        return (folder / nm) if folder else src.with_name(nm)
+
+    def occupied(p: Path) -> bool:
+        if not p.exists():
+            return False
+        try:
+            if p.resolve() == src_resolved:
+                return True            # 就是源文件本身 → 绝对不能让出去
+        except OSError:
+            return True
+        return True
+
+    n = 0
+    while occupied(candidate(n)):
         n += 1
-    return out
+        if n > 9999:
+            raise RuntimeError(f"输出名重名过多：{stem}.{target}")
+    return candidate(n)
 
 
 def gc_old(max_age: float = 3600) -> None:
