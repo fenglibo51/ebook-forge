@@ -1,79 +1,203 @@
-# BookForge
+# EbookForge
 
-电子书 / 漫画格式转换引擎。**纯 Python 标准库自研**，不含 Calibre、不依赖 poppler / unar，
-不调用任何外部二进制。
+电子书 / 漫画格式转换工具。**转换引擎完全自研，纯 Python 标准库实现** ——
+不需要 Calibre、不需要 poppler、不需要 unar、不调用任何外部二进制。
 
-> 当前进度：P0（漫画链）已完成，文字书链路在 P1~P6。
+装好就能跑，镜像 172 MB（对比 Calibre 方案的 1.5 GB）。
 
-## 现在能做什么
+![格式转换](docs/images/convert.png)
 
-```
-漫画链
-  CBZ / ZIP              →  CBZ / ZIP / EPUB / PDF
-  CB7 / CBC（7z）        →  CBZ / EPUB / PDF
-  EPUB(漫画)             →  CBZ / EPUB / PDF
-  PDF(图片型漫画)        →  CBZ / EPUB / PDF
-  MOBI(漫画)             →  CBZ / EPUB / PDF
+---
 
-文字链
-  TXT / FB2 / DOCX / EPUB(小说) / MOBI(小说)
-      →  TXT / FB2 / DOCX / EPUB / MOBI / PDF
-```
+## 能转什么
 
-PDF 输出分两条路，互不干扰：
+行是源格式，列是目标格式。`●` 支持　`—` 不适用
 
 ```
-漫画 → PDF    图片原字节直嵌（DCTDecode / JPXDecode / FlateDecode + Predictor 15）
-文字 → PDF    书排版引擎（L1：单栏分页 / 章节另起页 / 页码 / 首行缩进 2 字符）
-              + TrueType 子集化嵌入（10MB 字体按书用到的字裁成几十 KB）
+源                 CBZ   ZIP   EPUB   PDF   TXT   FB2   DOCX  MOBI
+─────────────────────────────────────────────────────────────────────
+CBZ / ZIP           ●     ●     ●      ●     —     —     —     —
+CB7 / CBC（7z）     ●     ●     ●      ●     —     —     —     —
+PDF（图片型）        ●     ●     ●      ●     —     —     —     —
+EPUB（漫画）         ●     ●     ●      ●     —     —     —     —
+MOBI（漫画）         ●     ●     ●      ●     —     —     —     —
+TXT                 —     —     ●      ●     ●     ●     ●     ●
+FB2                 —     —     ●      ●     ●     ●     ●     ●
+DOCX                —     —     ●      ●     ●     ●     ●     ●
+EPUB（小说）         —     —     ●      ●     ●     ●     ●     ●
+MOBI（小说）         —     —     ●      ●     ●     ●     ●     ●
 ```
 
-图片一律**原字节直嵌**：JPEG 走 DCTDecode、JPEG2000 走 JPXDecode、PNG 走 FlateDecode
-+ Predictor 15，不解码、不重采样、不二次压缩。
+**EPUB / PDF / MOBI 是两栖的**：里面装的是漫画图片就走漫画那条路，装的是文字就走文字那条路，
+工具会自己判断。所以同一本 EPUB 既能转成 CBZ，也能转成 TXT。
 
-PDF 输出也一样：PDF 里的 Flate 流可以直接当 PNG 的 IDAT（两边行滤波规范相同），
-所以 PDF → CBZ 也是零解码零重压。
+界面上会按你选的源文件类型自动置灰不可用的目标格式，鼠标悬停给出原因。
 
-**不依赖任何外部二进制** —— 没有 poppler、没有 Calibre、没有 unar、没有 p7zip、没有 kindlegen。
+### 明确不支持
 
-## 怎么用
+```
+AZW3 / KF8     Kindle 的碎片化 HTML + FDST/INDX 索引表，成本最高收益最低
+CBR（RAR）     RAR5 算法闭源，没有纯 Python 实现
+DRM 加密的电子书、加密 PDF
+HUFF/CDIC 压缩的 MOBI
+脚注、多栏、图文环绕、竖排排版
+```
+
+遇到这些会直接报错说明原因，不会悄悄降级、也不会偷偷转成有损。
+
+---
+
+## 转换质量
+
+### 图片：能无损就绝不重压
+
+图片一律**原字节直嵌**，不解码、不重采样、不二次压缩：
+
+```
+JPEG        →  PDF 的 DCTDecode 流（原样搬运）
+JPEG2000    →  PDF 的 JPXDecode 流
+PNG         →  PDF 的 FlateDecode + Predictor 15
+PDF 里的流  →  PNG 的 IDAT（两边行滤波规范相同，直接复用）
+```
+
+所以 `CBZ → PDF → CBZ` 这样的往返，图片逐字节一致（有校验脚本，见下）。
+
+### 文字：有排版引擎
+
+文字书转 PDF 不是把字拍成图片，是真的排版：
+
+```
+页面      A5 / A4，边距 2cm
+版式      单栏、章节另起页、页码、首行缩进 2 字符、1.5 倍行距
+断行      中文按字符断、英文按词断
+禁则      句号逗号不落行首、开括号不挂行尾
+标点挤压  行末标点压到半角，还超就整行微缩（≤8%）
+中英间距  汉字和英文之间留 1/4 个字宽
+字体      TrueType 子集化嵌入 —— 10 MB 字体按书里用到的字裁成几十 KB
+```
+
+一本 31 万字的小说转出来约 700 页、3 MB，中文可选中可复制可搜索。
+
+### 有损的情况会明确告诉你
+
+有些 PDF 的页面是「图像蒙版」结构（常见于脚本生成的漫画），抽出来是反相的黑白图，不是页面。
+这种只能逐页渲染成图片，**文字部分会丢**。
+
+工具会走渲染兜底，但结果里一定标记为「有损」并说明原因，醒目的琥珀色警告，不会混在成功里。
+也可以在设置里关掉兜底 —— 关掉后这类文件直接报错。
+
+---
+
+## 快速开始
+
+### Docker（推荐）
 
 ```bash
-# 漫画包 → PDF（默认 300dpi 换算页面，图片不缩放）
-python3 -m bookforge convert 漫画.cbz pdf
-
-# 漫画包 → EPUB
-python3 -m bookforge convert 漫画.cbz epub -o 输出.epub
-
-# epub 漫画 → cbz
-python3 -m bookforge convert 漫画.epub cbz
-
-# 图片等比缩进 A5 页面（不裁剪、不改像素）
-python3 -m bookforge convert 漫画.cbz pdf --fit page --page-size a5
+git clone https://github.com/fenglibo51/ebook-forge.git
+cd ebook-forge
+docker compose up -d --build
 ```
 
-作为库用：
+打开 `http://<你的地址>:8505`。
+
+compose 里要改的只有书库路径：
+
+```yaml
+volumes:
+  - /你的/书库路径:/Book:rw     # 要 rw：转换结果默认写回源文件同目录
+  - ./data:/data
+```
+
+### 源码运行
+
+```bash
+pip install -r requirements.txt
+python3 -m backend.main          # → http://localhost:8506
+```
+
+### 命令行
+
+```bash
+python3 -m bookforge convert 漫画.cbz pdf              # 自动放在同目录
+python3 -m bookforge convert 小说.epub pdf -o 输出.pdf
+python3 -m bookforge convert 漫画.cbz pdf --fit page --page-size a5
+python3 -m bookforge verify 原文件.cbz 转换后.pdf        # 逐张校验无损
+```
+
+当库用：
 
 ```python
 from bookforge import convert
 r = convert("漫画.cbz", "pdf", dpi=300)
-print(r["pages"], r["out"])
+print(r["pages"], r["out"], r["mode"])     # mode: "" 无损 / "render" 有损
 ```
 
-## 验证是不是真无损
+---
 
-```bash
-python3 scripts/verify_lossless.py 源.cbz 目标.pdf
+## 界面
+
+四个页面：格式转换、书库浏览、转换记录、设置。左侧栏可收起（收起后只剩图标）。
+
+**书库浏览** —— 直接在服务器上勾文件批量转，不用先把上百 MB 的文件传一遍。
+格式筛选能识别「文件夹内部有没有该格式」，选 MOBI 之后留下的都是真有 MOBI 的目录。
+
+![书库](docs/images/library.png)
+
+**转换记录** —— 每次转换都留底，有损的用 `!` 标出来。
+
+![记录](docs/images/history.png)
+
+**深色模式** —— 侧边栏底部一键切换，跟随系统主题。
+
+![深色](docs/images/dark.png)
+
+---
+
+## 输出与文件
+
+```
+默认      转换结果和源文件放在同一个目录
+          例：神经榜.mobi → 神经榜.cbz（同目录）
+          重名自动加 _1、_2，绝不覆盖原件
+
+自定义    设置里可以指定统一输出目录，不存在会自动创建
+
+删除源文件  只在书库页勾选文件时可选，默认不删，勾了会二次确认
+            转换失败时永远不删源文件
+            从设备上传的文件不会删（服务器上只是副本）
+
+上传副本   保留 24 小时后自动清理，设置页可看占用、可手动清
 ```
 
-输出逐张 md5 比对结果。**只有「字节一致 N/N」才算无损**，页数对不上直接判失败。
+---
 
-PDF 只比对 DCTDecode / JPXDecode（原样嵌入的 JPEG / JPEG2000）；
-PNG 直通走像素级比对。
+## 已知限制
 
-## 依赖
+```
+内存        整本读进内存处理。单本几个 GB 的合集会很吃内存
+渲染速度    蒙版 PDF 走渲染兜底时约 5 秒/页（纯 Python），162 页约 15 分钟
+进度粒度    转换进度按文件算，不是按页 —— 引擎内部没有页级回调
+字体        只支持 TrueType（.ttf）。CFF/OTF 字体会报错
+DOCX 输出   暂不支持嵌图，图片会跳过并在结果里报数量
+```
 
-无。Python ≥ 3.11，不用 pip install 任何东西。
+---
+
+## 技术说明
+
+引擎用「中间表示」架构：N 个源格式解析成统一的书模型，再从书模型写 M 个目标格式。
+所以 N×M 条转换路径只需要写 N+M 个模块，新增一个格式不用改其他任何地方。
+
+各格式的内部实现笔记、遇到的具体问题和取舍，在 [docs/architecture.md](docs/architecture.md)。
+
+```
+bookforge/          转换引擎（零外部依赖，可独立当库用）
+  formats/          CBZ / EPUB / 7z / MOBI / TXT / FB2 / DOCX / PNG
+  pdf/              PDF 读写、CCITT 解码、字体子集化、排版、渲染兜底
+backend/            FastAPI 服务
+frontend/           原生 HTML / CSS / JS（无框架、无构建步骤）
+tests/              100 项单元测试
+```
 
 跑测试：
 
@@ -81,107 +205,9 @@ PNG 直通走像素级比对。
 python3 -m unittest discover -s tests
 ```
 
-## Web 界面
+---
 
-```bash
-# 依赖（引擎本身零依赖，这些只有跑 HTTP 服务才需要）
-pip install -r requirements.txt
+## 致谢
 
-# 起服务
-python3 -m backend.main          # → http://localhost:8506
-
-# 或者 Docker
-docker compose up -d --build
-```
-
-四个页面：格式转换 / 书库浏览 / 转换记录 / 设置。
-
-```
-backend/main.py      FastAPI 入口，前端静态文件挂在根路径
-backend/api.py       路由：upload / library / jobs / history / settings / download
-backend/jobs.py      转换任务队列（单线程，文件级进度，每转完一个写历史）
-backend/store.py     历史 + 设置持久化（JSON，不用数据库）
-frontend/index.html  四页骨架
-frontend/css/        variables / layout / components / pages 四层
-frontend/js/api.js   接口封装
-frontend/js/app.js   全部交互
-```
-
-**进度粒度是「文件级」**，不是页级 —— 引擎内部没有进度回调，按页报进度得改引擎接口，
-目前不做好看的假进度条。
-
-**有损提示**：转换完成后，走了渲染模式的文件会单独列在琥珀色警告条里，
-并在记录页用 `!` 标记。这是硬要求，不能只在日志里提一句。
-
-## 已知限制
-
-```
-CBR（RAR）            永久不支持：RAR5 算法闭源，纯 Python 无实现
-AZW3（KF8）           不支持：碎片化 HTML + FDST/INDX 表还没做，明确报错
-MOBI + DRM            明确报错（有 DRM 的 mobi 无法解）
-MOBI + HUFF/CDIC      明确报错（只做 PalmDOC 压缩；实测库里 42 个 mobi 全是 PalmDOC）
-MOBI 输出             不压缩（compression=1），体积比原版大，但结构最稳
-带透明通道的 PNG      能进 PDF，但会拆成 SMask，字节不再一致（像素无损）
-TIFF / WEBP / GIF     明确报错，不静默转码
-GBK 文件名的 zip      条目名会显示成乱码（不影响转换，因为写入时重编号）
-DOCX 输出             暂不支持嵌图（会跳过并提示数量）
-```
-
-文字 → PDF 的排版是 L2：
-
-```
-有     单栏分页 / 章节另起页 / 页码 / 首行缩进 2 字符 / 图按可用宽度缩放
-      行首禁则（。，、）」等不落行首，拉回上一行）
-      行尾禁则（（「《 不挂行尾，推到下一行）
-      标点挤压（行末/连续标点压到半角）
-      中英混排间距（1/4 em）
-      孤行控制（标题后至少跟 2 行）
-      中文按字符断行、英文按词断行
-没有   脚注、多栏、图文环绕
-字体   只用 TrueType(glyf)；CFF/OTF 明确报错。默认找 ~/.fonts/NotoSansSC-Regular.ttf
-```
-
-PDF 作为源时：
-
-```
-蒙版型 PDF            页面是 /ImageMask 结构（典型：iTextSharp 脚本生成）
-                      抽出来是反相的黑白图，不是页面
-                      → 走渲染兜底（有损），mode=render，note 写明原因
-覆盖率不足            有页提不出整页图 → 同样走渲染兜底
-Indexed 调色板 PDF    暂不支持（P2 补）
-JBIG2 编码的 PDF      暂不支持（P2 补）
-加密 PDF              明确报错
-```
-
-渲染兜底（P6）的边界：
-
-```
-支持   q/Q、cm、Do（图片和 Form）、re/m/l/c/h + f/S、rg/g/k、w、ImageMask
-不做   文字（BT/Tf/Tj 全部跳过）—— 没有字形轮廓光栅化
-      渐变、透明度、混合模式、图案、内联图像、JPEG/JP2 图片
-代价   约 5 秒/页（纯 Python）。162 页的书约 15 分钟，poppler 是 8 分钟
-开关   BOOKFORGE_RENDER_DPI（默认 200，可选 150/300）
-      BOOKFORGE_RENDER_FALLBACK=false 时彻底禁用 → 这类 PDF 直接报错
-```
-
-防炸：单页解压超 256MB、整包解压超 4GB 直接拒（`BOOKFORGE_MAX_PAGE_MB` /
-`BOOKFORGE_MAX_TOTAL_MB` 可调）。用压缩包里声明的大小预判，不解压就能拦住。
-`zip → cbz` 是容器等价复制，不解压，百 GB 的包也照过。
-
-⚠️ CBZ / EPUB 作为源时所有页一次性读进内存（25 页 / 29MB 实测峰值 152MB）。
-500 页以上的大包会撞上限，流式处理排在 P2。
-PDF 作为源不受此限 —— 解析是流式的，203 页 / 76MB 实测 0.8 秒、内存 80MB。
-
-## 路线图
-
-```
-P0  漫画链无损        IR + cbz/epub + png + pdf/writer         已完成
-P1  PDF → CBZ         pdf/reader + images + ccitt              已完成
-P2  容器扩展          sevenz + fb2 + txt + docx
-P3  Kindle            mobi 读 + 写
-P4  文字书 → PDF      book/model + css + layout(L1) + fonts
-P5  中文排版          layout 升 L2（禁则、标点挤压、脚注）
-P6  渲染兜底          极简渲染器（蒙版/矢量 PDF，有损）
-```
-
-细节与取舍见 `docs/architecture.md`。
+这些格式规范全部来自公开文档：PDF 32000-1、ECMA-376、EPUB 3、KF8 reference。
+字体使用 [Noto Sans SC](https://fonts.google.com/noto/specimen/Noto+Sans+SC)（SIL Open Font License）。

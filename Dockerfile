@@ -14,9 +14,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Web 层依赖
+# Web 层依赖（国内 NAS 直连 pypi 常常超时，默认走清华源；要换就 --build-arg）
+ARG PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -i ${PIP_INDEX} -r requirements.txt
 
 # 引擎 + 后端 + 前端
 COPY bookforge/ ./bookforge/
