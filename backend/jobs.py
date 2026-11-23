@@ -252,7 +252,15 @@ def _run(job: Job) -> None:
             item.ok = False
             item.status = "fail"
             item.error = str(e) or e.__class__.__name__
-            traceback.print_exc()
+            # 配额满、索引写不进去这类是「预期内的失败」，日志一行就够；
+            # 甩整段 traceback 只会把真正的 bug 淹掉。
+            cause = e.__cause__ if isinstance(e.__cause__, Exception) else None
+            expected = isinstance(cause, (uploads.QuotaError, OSError))
+            if expected:
+                logging.getLogger(__name__).warning(
+                    "转换失败（%s）：%s", item.name, item.error)
+            else:
+                traceback.print_exc()
         item.elapsed = time.time() - t0
         job.done += 1
 
