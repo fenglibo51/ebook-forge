@@ -11,6 +11,4 @@ samples/*.epub
 samples/*.pdf
 samples/*.b64
 
-# 保留：README 用截图
-!samples/preview.png
 data/
