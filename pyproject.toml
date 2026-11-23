@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bookforge"
-version = "1.0.4"
+version = "1.0.5"
 description = "电子书 / 漫画格式转换引擎，纯标准库自研，不依赖 Calibre"
 requires-python = ">=3.11"
 dependencies = []

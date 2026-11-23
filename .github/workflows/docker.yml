@@ -21,7 +21,31 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
+  # 发布门禁：镜像推送之前必须先过完整单元测试。
+  # 之前没有这一步 —— CI 明明红了，打 tag 照样把镜像推上去了，
+  # v1.0.4 就是这么发出去的一个「测试是失败的、但镜像发布了」的版本。
+  # 发布脚本自己那套冒烟只证明「能启动、能转一个文件」，替代不了全量测试。
+  test:
+    name: 发布前单元测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 装依赖（运行 + 测试）
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: 跑全量测试
+        run: python -m unittest discover -s tests -v
+
+      - name: 语法检查
+        run: python -m compileall -q bookforge backend
+
   build-and-push:
+    needs: test            # 测试不过就别推镜像
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -124,15 +124,72 @@ class StrayOutputTests(unittest.TestCase):
         self.assertTrue(same.exists())
         self.assertEqual(same.read_bytes(), before)
 
-    def test_out_path_never_picks_an_existing_file(self):
-        """调度层靠这个前提才敢删：选出来的路径调用前一定不存在。"""
+    def test_reserve_avoids_existing_file(self):
+        """撞上已有文件要换名，而且不能动已有文件。"""
         src = self._cbz(self.tmp / "c.cbz")
         existing = self.tmp / "c.epub"
         existing.write_bytes(b"already here")
         before = existing.read_bytes()
-        picked = jobs._out_path(src, "epub", "c.cbz")
-        self.assertNotEqual(picked, existing, "撞上已有文件应该换名避让")
+        picked = jobs._reserve_output(src, "epub", "c.cbz")
+        try:
+            self.assertNotEqual(picked, existing, "撞上已有文件应该换名避让")
+            self.assertEqual(picked.path if hasattr(picked, "path") else picked,
+                             self.tmp / "c_1.epub")
+        finally:
+            picked.unlink(missing_ok=True)
         self.assertEqual(existing.read_bytes(), before, "已有文件内容不能被改")
+
+    def test_reserve_is_exclusive_and_leaves_placeholder(self):
+        """占位靠 O_EXCL，是原子的：占住的是个 0 字节文件。"""
+        src = self._cbz(self.tmp / "d.cbz")
+        first = jobs._reserve_output(src, "epub", "d.cbz")
+        self.assertTrue(first.exists())
+        self.assertEqual(first.stat().st_size, 0, "占位应该是空文件")
+
+        second = jobs._reserve_output(src, "epub", "d.cbz")
+        self.assertNotEqual(first, second, "同一个名字不能被抢两次")
+        self.assertEqual(second.name, "d_1.epub")
+        second.unlink(missing_ok=True)
+        first.unlink(missing_ok=True)
+
+    def test_reserve_never_takes_the_source(self):
+        """同格式转换时不能把源文件占掉。"""
+        same = self._cbz(self.tmp / "e.cbz")
+        before = same.read_bytes()
+        picked = jobs._reserve_output(same, "cbz", "e.cbz")
+        try:
+            self.assertNotEqual(picked, same)
+            self.assertEqual(same.read_bytes(), before)
+        finally:
+            picked.unlink(missing_ok=True)
+
+    def test_two_concurrent_reservations_never_collide(self):
+        """两个线程同时抢同一个名字，必须拿到两个不同的路径。
+
+        这条就是 TOCTOU 的回归：早先用 exists() 判断，两个线程可能同时
+        看到「这个名字没人用」，然后都返回同一个路径。
+        """
+        import threading
+        src = self._cbz(self.tmp / "f.cbz")
+        got: list[Path] = []
+        barrier = threading.Barrier(8)
+
+        def worker():
+            barrier.wait()
+            p = jobs._reserve_output(src, "epub", "f.cbz")
+            got.append(p)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(got), 8)
+        self.assertEqual(len(set(got)), 8, "抢到了重复的输出名 —— 会互相覆盖")
+        for p in got:
+            self.assertTrue(p.exists(), "每个占位文件都应该真实存在")
+            p.unlink(missing_ok=True)
 
     def test_three_writer_paths_cleanup(self):
         """TXT→PDF、CBZ→EPUB、CBZ→CBZ 三条代表性写盘路径。"""
@@ -142,8 +199,9 @@ class StrayOutputTests(unittest.TestCase):
 
         cases = [(txt, "pdf", 1), (cbz, "epub", 2), (cbz, "cbz", 2)]
         for src, target, die_at in cases:
-            out = jobs._out_path(src, target, src.name)
-            self.assertFalse(out.exists(), f"{target}: 调用前不该存在")
+            out = jobs._reserve_output(src, target, src.name)
+            self.assertTrue(out.exists(), f"{target}: 占位文件应该已创建")
+            self.assertEqual(out.stat().st_size, 0)
             with mock.patch.object(zipfile.ZipFile, "writestr",
                                    self._die_on_writestr(die_at)):
                 try:
@@ -152,7 +210,7 @@ class StrayOutputTests(unittest.TestCase):
                     pass
             # 不管引擎留没留，调度层的清理都要让目录回到干净状态
             jobs._remove_stray(out, src)
-            self.assertFalse(out.exists(), f"{src.name} → {target}: 还有半成品")
+            self.assertFalse(out.exists(), f"{src.name} → {target}: 还有残留")
             self.assertTrue(src.exists(), f"{src.name} → {target}: 源文件被牵连")
 
 

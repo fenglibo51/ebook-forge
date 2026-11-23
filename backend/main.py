@@ -70,7 +70,7 @@ async def lifespan(_app: FastAPI):
                 pass
 
 
-app = FastAPI(title="EbookForge", version="1.0.4", docs_url="/api/docs",
+app = FastAPI(title="EbookForge", version="1.0.5", docs_url="/api/docs",
               lifespan=lifespan)
 
 

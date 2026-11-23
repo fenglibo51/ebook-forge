@@ -170,12 +170,21 @@ def pending_count() -> int:
 
 
 def _run(job: Job) -> None:
+    # 排队期间可能已经被 cancel() 收尾了 —— 它会把所有 item 标成 canceled、
+    # done 直接设成 total、status 设成 done。但线程池里那个 future 撤不回来，
+    # 轮到它时照样会执行到这里。早先没有这道检查，结果是：
+    #   status 从 done 倒退成 running，然后每个 item 再 done += 1
+    #   → done > total，前端进度条超过 100%。
+    # 用同一把 _lock 做判断和状态切换，避免和 cancel() 撞在一起。
+    with _lock:
+        if job.status == "done":
+            return
+        job.status = "running"
+        job.started = time.time()
+
     from bookforge import convert
     from bookforge.formats import mobi as mobi_mod
     from bookforge.pdf import to_comic
-
-    job.status = "running"
-    job.started = time.time()
 
     # 渲染兜底是模块级开关，每次任务开始时同步一次
     to_comic.RENDER_FALLBACK = bool(job.options.get("render_fallback", True))
@@ -193,8 +202,8 @@ def _run(job: Job) -> None:
         item.status = "running"
         t0 = time.time()
         try:
-            out_path = _out_path(Path(item.src), job.target, item.name,
-                                 str(job.options.get("output_dir", "")))
+            out_path = _reserve_output(Path(item.src), job.target, item.name,
+                                       str(job.options.get("output_dir", "")))
             try:
                 r = convert(
                     item.src, job.target, out=out_path,
@@ -370,15 +379,15 @@ def _drop_output(item: "JobItem") -> None:
 
 
 def _remove_stray(out: Path, src: Path) -> None:
-    """删掉本次转换留下的半成品。
+    """删掉本次转换占住/写了一半的那条路径。
 
     什么时候会有半成品：引擎是边写边落盘的（CBZ/EPUB 用 zipfile 直接打开
     最终路径），写到第 N 个条目时磁盘满或 I/O 出错，文件就留在那儿了 ——
     实测留下过一个 134 字节的坏 zip，能打开但只有 1 个条目。
 
-    为什么这里敢删：out_path 是 convert() 调用**之前**由 _out_path() 选定的，
-    它保证返回的路径当时不存在（重名会一直往后加 _1、_2）。所以调用失败后
-    只要它现在存在，就只能是本次产生的。
+    为什么这里敢删：out 是 `_reserve_output()` 用 `O_CREAT|O_EXCL` 原子抢到的
+    名字，抢到那一刻它就是本任务的，别人不可能也持有同一个名字。所以失败后
+    删它绝不会误伤其他进程写出来的同名文件（早先靠 exists() 判断就有这个风险）。
 
     绝不碰源文件 —— 同格式转换时两者可能指同一个地方，这里再挡一道。
     """
@@ -394,18 +403,28 @@ def _remove_stray(out: Path, src: Path) -> None:
         pass
 
 
-def _out_path(src: Path, target: str, name: str, output_dir: str = "") -> Path:
-    """算输出路径。**保证结果永远不会是源文件本身。**
+def _reserve_output(src: Path, target: str, name: str, output_dir: str = "") -> Path:
+    """选出输出名并**原子占位**，返回占住的路径。
 
     output_dir 为空 → 和源文件放一起
     output_dir 有值 → 统一收进去，目录不存在就建
-    任何情况下撞上源文件 → 加 _1、_2 换名
+    撞名 → 加 _1、_2 换名
+    **任何情况下都不会占源文件本身**
+
+    为什么不能用 `exists()` 判重名：判断「这个名字没人用」和真正开始写之间
+    有一段空窗。共享 NAS 目录上另一个进程（第二个容器、用户手动跑 CLI）
+    完全可能在这段时间里创建同名文件；等我们失败清理时按 exists() 一删，
+    删掉的就是别人的东西。
+    `os.open(..., O_CREAT | O_EXCL)` 是原子操作：抢到了这个名字就是我的，
+    抢不到抛 FileExistsError 换下一个。
+
+    占位的是个 0 字节文件，转换直接覆盖写它；失败时由调用方 `_remove_stray()`
+    删掉 —— 因为它是我们 O_EXCL 抢来的，删它绝不会误伤别人。
 
     ⚠️ 早先的写法是 `while out.exists() and out.resolve() != src.resolve()`：
     当目标路径和源路径**完全相同时**，循环条件为假直接返回源路径，
     于是同格式转换（txt→txt、pdf→pdf）就把源文件覆盖了。
     实测 txt→txt 不但覆盖，内容还被改写（全角缩进被吃掉，28 字节变 26 字节）。
-    现在改成：只要候选路径等于源文件，就算"已占用"，照样换名。
     """
     folder: Path | None = None
     if output_dir.strip():
@@ -423,26 +442,24 @@ def _out_path(src: Path, target: str, name: str, output_dir: str = "") -> Path:
     except OSError:
         src_resolved = src
 
-    def candidate(n: int) -> Path:
+    for n in range(0, 9999):
         nm = f"{stem}.{target}" if n == 0 else f"{stem}_{n}.{target}"
-        return (folder / nm) if folder else src.with_name(nm)
-
-    def occupied(p: Path) -> bool:
-        if not p.exists():
-            return False
+        cand = (folder / nm) if folder else src.with_name(nm)
         try:
-            if p.resolve() == src_resolved:
-                return True            # 就是源文件本身 → 绝对不能让出去
+            if cand.resolve() == src_resolved:
+                continue              # 就是源文件本身 → 绝对不能让出去
         except OSError:
-            return True
-        return True
-
-    n = 0
-    while occupied(candidate(n)):
-        n += 1
-        if n > 9999:
-            raise RuntimeError(f"输出名重名过多：{stem}.{target}")
-    return candidate(n)
+            continue
+        try:
+            fd = os.open(str(cand), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            continue                  # 被别人占了，换下一个名字
+        except OSError as e:
+            raise RuntimeError(
+                f"输出文件创建失败：{cand}（{e.strerror or e}）") from e
+        os.close(fd)
+        return cand
+    raise RuntimeError(f"输出名重名过多：{stem}.{target}")
 
 
 def gc_old(max_age: float = 3600) -> None:

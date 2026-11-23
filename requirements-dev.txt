@@ -9,3 +9,9 @@
 # 不锁死版本：它只是测试用的 HTTP 客户端，跟运行时行为无关，
 # 锁了反而每次都要手动跟进。生产依赖在 requirements.txt 里，那些才锁死。
 httpx2
+
+# PyYAML：tests/test_v103.py 要解析 .github/workflows/docker.yml，把「准备 tag」
+# 那段 shell 原样跑一遍验证标签门禁。手写正则提取太脆（缩进/注释一改就失配），
+# 用现成的 YAML 解析器更稳。
+# 只在测试环境需要 —— 生产镜像里没有任何代码 import yaml，别加到 requirements.txt。
+PyYAML>=6.0
