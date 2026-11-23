@@ -138,6 +138,10 @@ const API = (() => {
       return putJSON('/api/settings', patch);
     },
 
+    /* 分享模式开关 */
+    shareStatus() { return get('/api/share/status'); },
+    toggleShare(enabled) { return postJSON('/api/share/toggle', { enabled }); },
+
     /* 主人端：管理分享链接 */
     createShare(ttlHours = 24, note = '') {
       return postJSON('/api/shares', { ttl_hours: ttlHours, note });

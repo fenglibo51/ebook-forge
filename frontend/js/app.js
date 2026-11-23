@@ -787,6 +787,7 @@
       fillSettings(settingsCache);
       loadCaps();
       loadCacheStat();
+      refreshShareUI();
     } catch (e) {
       toast('读取设置失败：' + (e.message || e), 'fail');
     }
@@ -983,6 +984,79 @@
   }
 
 
+
+  /* ================= 分享模式开关（设置页） ================= */
+  let shareStatus = { enabled: false, admin_token: '', env_locked: false };
+
+  async function refreshShareUI() {
+    if (API.isShared) return;          // 分享页没有后台权限，别去戳需要令牌的接口
+    try {
+      shareStatus = await API.shareStatus();
+    } catch { return; }
+    // 设置页
+    const cb = $('#shareEnabled');
+    if (cb) {
+      cb.checked = !!shareStatus.enabled;
+      cb.disabled = !!shareStatus.env_locked;
+      $('#shareHint').textContent = shareStatus.env_locked
+        ? '令牌已由环境变量 EBOOKFORGE_ADMIN_TOKEN 固定，这里改不了。'
+        : (shareStatus.enabled
+            ? '已开启：别人的分享链接只能转换和下载自己的结果，后台接口需要密钥。'
+            : '关闭状态：分享按钮不可用，后台接口不需要密码（适合纯内网自用）。');
+      const box = $('#shareTokenBox');
+      if (box) box.style.display = shareStatus.enabled && shareStatus.admin_token ? '' : 'none';
+      const tk = $('#shareToken');
+      if (tk && shareStatus.admin_token) tk.value = shareStatus.admin_token;
+    }
+    // 转换页的按钮
+    const btn = $('#shareBtn');
+    if (btn) {
+      if (shareStatus.enabled) {
+        btn.disabled = false;
+        btn.style.opacity = '';
+        btn.title = '生成一条 24 小时有效的链接，别人只能转换和下载自己的结果';
+      } else {
+        btn.disabled = true;
+        btn.style.opacity = '.45';
+        btn.title = '先在设置页开启「分享模式」';
+      }
+    }
+  }
+
+  if ($('#shareEnabled')) {
+    $('#shareEnabled').addEventListener('change', async (e) => {
+      const want = e.target.checked;
+      if (want) {
+        const ok = confirm('开启分享模式后：\n\n· 后台接口（书库/记录/设置）需要管理密钥\n· 会生成一个密钥，你需要记下来\n· 转换页会出现「生成分享链接」\n\n继续？');
+        if (!ok) { e.target.checked = false; return; }
+      } else {
+        const ok = confirm('关闭分享模式？\n\n所有已发出的分享链接会立刻失效。');
+        if (!ok) { e.target.checked = true; return; }
+      }
+      try {
+        const r = await API.toggleShare(want);
+        if (want && r.admin_token) {
+          toast('分享模式已开启，管理密钥：' + r.admin_token);
+        } else if (!want) {
+          toast(`已关闭，${r.revoked || 0} 条分享链接已作废`);
+        }
+        await refreshShareUI();
+      } catch (err) {
+        e.target.checked = !want;
+        toast('操作失败：' + (err.message || err), 'fail');
+      }
+    });
+  }
+
+  if ($('#copyShareToken')) {
+    $('#copyShareToken').addEventListener('click', async () => {
+      const v = $('#shareToken').value;
+      if (!v) return;
+      try { await navigator.clipboard.writeText(v); toast('密钥已复制'); }
+      catch { $('#shareToken').select(); toast('请手动复制'); }
+    });
+  }
+
   /* ================= 管理令牌 ================= */
   window.addEventListener('ebf:need-token', () => {
     if (API.isShared) return;                 // 分享链接不需要令牌
@@ -1023,6 +1097,7 @@
     } catch { }
     updateFmtState();
     renderQueue();
+    refreshShareUI();
     navigate(location.hash.slice(1) || 'convert');
   })();
 

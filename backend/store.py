@@ -35,6 +35,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "upload_dir": "temp",
     # 输出位置：留空 = 和源文件放一起；填绝对路径则统一收进去
     "output_dir": "",
+    # 分享模式：关闭时后台不需要密钥（纯内网自用）；开启后后台要密钥，
+    # 转换页的「生成分享链接」按钮才可用。默认关闭。
+    "share_enabled": False,
+    "admin_token": "",
 }
 
 

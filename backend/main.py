@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import os
 import secrets
+import time
 import sys
+from typing import Any
 from pathlib import Path
 
 # 让 `python3 -m backend.main` 在项目根目录下能找到 bookforge
@@ -53,14 +55,35 @@ app = FastAPI(title="EbookForge", version="0.1.0", docs_url="/api/docs",
 # 令牌可以放在三处任意一个：X-Admin-Token 头、ebf_admin cookie、?k= 参数。
 # 为什么要 cookie：下载是 window.location 跳转，带不了自定义头。
 
-_ADMIN_TOKEN = os.environ.get("EBOOKFORGE_ADMIN_TOKEN", "").strip()
 _EXEMPT_PREFIX = ("/api/s/",)
 _EXEMPT_PATH = ("/api/health", "/api/capabilities")
+
+# 令牌来源，优先级：
+#   ① 环境变量 EBOOKFORGE_ADMIN_TOKEN（部署时固定，最高优先）
+#   ② 设置页里打开「分享模式」后自动生成的那个
+# 两个都没有 = 不拦（开箱即用、纯内网自用）
+def _active_admin_token() -> str:
+    """当前生效的管理令牌，空字符串 = 不拦。
+
+    不缓存：settings.json 只有两百多字节，读一次不到 1 毫秒；
+    而加了 1 秒缓存之后，在设置页刚打开分享模式会有一秒钟「没生效」的窗口
+    （实测踩过：toggle 完立刻请求还是 200）。
+    """
+    env_tok = os.environ.get("EBOOKFORGE_ADMIN_TOKEN", "").strip()
+    if env_tok:
+        return env_tok
+    try:
+        from . import store
+        s = store.load_settings()
+        return str(s.get("admin_token", "")).strip() if s.get("share_enabled") else ""
+    except Exception:
+        return ""                      # 设置读不出来就别拦，别把人锁在外面
 
 
 @app.middleware("http")
 async def admin_guard(request, call_next):
-    if not _ADMIN_TOKEN:
+    token = _active_admin_token()
+    if not token:
         return await call_next(request)
 
     path = request.url.path
@@ -74,7 +97,7 @@ async def admin_guard(request, call_next):
            or request.cookies.get("ebf_admin")
            or request.query_params.get("k")
            or "")
-    if tok and secrets.compare_digest(tok, _ADMIN_TOKEN):
+    if tok and secrets.compare_digest(tok, token):
         return await call_next(request)
     return JSONResponse(status_code=401,
                         content={"detail": "需要管理令牌", "need_token": True})

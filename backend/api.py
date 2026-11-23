@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 import time
 from pathlib import Path
@@ -399,6 +400,48 @@ def clear_cache() -> dict[str, Any]:
             except OSError:
                 pass
     return {"removed": info["files"], "freed": info["size"]}
+
+
+# ── 分享模式开关 ──────────────────────────────────────────────────────────
+# 默认关闭：后台不拦、分享按钮不可用，开箱即用不会莫名其妙要密码。
+# 打开后：自动生成管理密钥，后台接口要它，分享链接功能同时可用。
+
+class ShareToggleIn(BaseModel):
+    enabled: bool
+
+
+@router.get("/share/status")
+def share_status() -> dict[str, Any]:
+    s = store.load_settings()
+    enabled = bool(s.get("share_enabled"))
+    env_locked = bool(os.environ.get("EBOOKFORGE_ADMIN_TOKEN", "").strip())
+    return {
+        "enabled": enabled,
+        # 已经生成过就回显，方便用户找回
+        "admin_token": str(s.get("admin_token", "")) if enabled else "",
+        # 环境变量钉死的情况下，设置页的开关不起作用
+        "env_locked": env_locked,
+    }
+
+
+@router.post("/share/toggle")
+def share_toggle(body: ShareToggleIn) -> dict[str, Any]:
+    if os.environ.get("EBOOKFORGE_ADMIN_TOKEN", "").strip():
+        raise HTTPException(409, "令牌已由环境变量 EBOOKFORGE_ADMIN_TOKEN 固定，设置页改不了")
+
+    s = store.load_settings()
+    if body.enabled:
+        tok = str(s.get("admin_token", "")).strip() or secrets.token_urlsafe(18)
+        store.save_settings({"share_enabled": True, "admin_token": tok})
+        return {"enabled": True, "admin_token": tok}
+
+    store.save_settings({"share_enabled": False})
+    # 关掉分享模式 = 之前发出去的链接全部作废
+    revoked = 0
+    for it in share.list_all():
+        if share.revoke(it["token"]):
+            revoked += 1
+    return {"enabled": False, "revoked": revoked}
 
 
 # ── 分享链接（管理端，只有主人用） ────────────────────────────────────────
