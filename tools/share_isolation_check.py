@@ -133,12 +133,19 @@ def main() -> int:
         check(st == 200, f"访客 A 能上传（{st}）")
         fa = json.loads(body)["files"][0]
 
+        # files 必须是对象数组（JobFile），每项要 name —— 早先这里传的是
+        # 纯 file_id 字符串数组，接口 422 直接打回来，脚本却在下一行 KeyError
         st, _h, body = _req(base, f"/api/s/jobs?{urllib.parse.urlencode({'t': token, 'sid': sid_a})}",
                             method="POST",
-                            data=json.dumps({"files": [fa["file_id"]], "target": "pdf",
-                                             "options": {}}).encode(),
+                            data=json.dumps({"files": [{"file_id": fa["file_id"],
+                                                        "name": fa["name"],
+                                                        "size": fa["size"]}],
+                                             "target": "pdf", "options": {}}).encode(),
                             headers={"Content-Type": "application/json"})
-        check(st == 200, f"访客 A 能建任务（{st}）")
+        if st != 200:
+            check(False, f"访客 A 能建任务（{st} {body[:160]!r}）")
+            return 1
+        check(True, f"访客 A 能建任务（{st}）")
         jid_a = json.loads(body)["job_id"]
 
         for _ in range(60):
@@ -153,14 +160,17 @@ def main() -> int:
         st, h, body = _req(base, f"/api/s/download/{jid_a}/0?" +
                            urllib.parse.urlencode({"t": token, "sid": sid_a}))
         check(st == 200 and body[:4] == b"%PDF", f"访客 A 能下载 PDF（{st}，{len(body)} 字节）")
-        cd = h.get("Content-Disposition", "")
+        # uvicorn/h11 会把响应头名规范成小写，所以不能按 "Content-Disposition" 直取
+        cd = next((v for k, v in h.items() if k.lower() == "content-disposition"), "")
         check("隔离 A.pdf" in urllib.parse.unquote(cd), f"下载名是原始书名（{cd[:60]}）")
 
         # ② 访客 B 拿 A 的 file_id
         st, _h, body = _req(base, f"/api/s/jobs?{urllib.parse.urlencode({'t': token, 'sid': sid_b})}",
                             method="POST",
-                            data=json.dumps({"files": [fa["file_id"]], "target": "pdf",
-                                             "options": {}}).encode(),
+                            data=json.dumps({"files": [{"file_id": fa["file_id"],
+                                                        "name": fa["name"],
+                                                        "size": fa["size"]}],
+                                             "target": "pdf", "options": {}}).encode(),
                             headers={"Content-Type": "application/json"})
         check(st in (403, 404, 422), f"访客 B 不能用 A 的 file_id（{st}）")
 
