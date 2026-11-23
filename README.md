@@ -81,6 +81,38 @@ PNG 直通走像素级比对。
 python3 -m unittest discover -s tests
 ```
 
+## Web 界面
+
+```bash
+# 依赖（引擎本身零依赖，这些只有跑 HTTP 服务才需要）
+pip install -r requirements.txt
+
+# 起服务
+python3 -m backend.main          # → http://localhost:8506
+
+# 或者 Docker
+docker compose up -d --build
+```
+
+四个页面：格式转换 / 书库浏览 / 转换记录 / 设置。
+
+```
+backend/main.py      FastAPI 入口，前端静态文件挂在根路径
+backend/api.py       路由：upload / library / jobs / history / settings / download
+backend/jobs.py      转换任务队列（单线程，文件级进度，每转完一个写历史）
+backend/store.py     历史 + 设置持久化（JSON，不用数据库）
+frontend/index.html  四页骨架
+frontend/css/        variables / layout / components / pages 四层
+frontend/js/api.js   接口封装
+frontend/js/app.js   全部交互
+```
+
+**进度粒度是「文件级」**，不是页级 —— 引擎内部没有进度回调，按页报进度得改引擎接口，
+目前不做好看的假进度条。
+
+**有损提示**：转换完成后，走了渲染模式的文件会单独列在琥珀色警告条里，
+并在记录页用 `!` 标记。这是硬要求，不能只在日志里提一句。
+
 ## 已知限制
 
 ```

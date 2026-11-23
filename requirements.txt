@@ -1,0 +1,4 @@
+# Web 层依赖（引擎本身零依赖，这些只有跑 HTTP 服务才需要）
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.20

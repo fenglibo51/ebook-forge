@@ -1,0 +1,47 @@
+/* ==========================================================================
+   EbookForge · 设计变量
+   暖白底 + 单色强调 + 状态色三档。改风格只动这个文件。
+   ========================================================================== */
+:root{
+  /* 底色 */
+  --bg:#F7F7F4;            /* 页面暖白 */
+  --surface:#FFFFFF;       /* 卡片 */
+  --surface-2:#FBFBF9;     /* 卡片内嵌区（上传框、输入框底） */
+  --hover:#F0F0EE;         /* 悬停 / 导航当前项 */
+
+  /* 线 */
+  --line:#E5E5E2;          /* 主分隔线（全站唯一的"阴影"） */
+  --line-soft:#D8D8D3;     /* 虚线框 */
+
+  /* 文字 */
+  --ink:#111111;           /* 主文字 / 主按钮底 */
+  --ink-2:#666666;         /* 次要 */
+  --ink-3:#8A8A86;         /* 说明 */
+  --ink-4:#C4C4BF;         /* 禁用 */
+
+  /* 状态（只用于圆点、细条、小标签底色，不铺大面积） */
+  --ok:#3F7D4F;
+  --ok-bg:rgba(63,125,79,.10);
+  --warn:#A86523;
+  --warn-bg:rgba(168,101,35,.06);
+  --warn-line:rgba(168,101,35,.22);
+  --fail:#A03A3A;
+  --fail-bg:rgba(160,58,58,.11);
+
+  /* 圆角 */
+  --r-lg:14px;
+  --r-md:10px;
+  --r-sm:8px;
+  --r-pill:999px;
+
+  /* 字体 */
+  --font:system-ui,-apple-system,"PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+
+  /* 侧边栏 */
+  --sb-w:240px;
+  --sb-w-collapsed:72px;
+
+  /* 动效 */
+  --t:.13s ease;
+}

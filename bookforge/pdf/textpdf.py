@@ -24,8 +24,13 @@ from ..model import (DEFAULT_TEXT_STYLE, Chapter, ImageBlock, PageSpec,
                      Paragraph, TextBook)
 from .fonts import TrueTypeFont
 
-# 默认字体：容器里已装（hermes 的自定义字体目录）
+# 默认字体：按顺序找，谁在就用谁
 DEFAULT_FONT_CANDIDATES = (
+    # Docker 镜像里随包带的那份
+    "/usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf",
+    # 项目自带（本地开发 / 直接跑源码）
+    str(Path(__file__).resolve().parent.parent.parent / "assets/fonts/NotoSansSC-Regular.ttf"),
+    # 容器里 hermes 的自定义字体目录
     "/home/hermeswebui/.hermes/home/.fonts/NotoSansSC-Regular.ttf",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",

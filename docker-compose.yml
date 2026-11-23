@@ -1,0 +1,18 @@
+services:
+  ebookforge:
+    build: .
+    image: fenglibo51/ebook-forge:v2
+    container_name: ebookforge
+    restart: unless-stopped
+    ports:
+      - "8506:8506"
+    volumes:
+      # 书库：换成你自己的路径；容器里统一挂到 /Book
+      - /volume1/Book:/Book:ro
+      # 运行时数据（历史、设置、上传的临时文件）
+      - ./data:/data
+    environment:
+      EBOOKFORGE_DATA: /data
+      # 渲染兜底（有损）的默认精度，页面设置里也能改
+      BOOKFORGE_RENDER_DPI: "200"
+      BOOKFORGE_RENDER_FALLBACK: "true"
