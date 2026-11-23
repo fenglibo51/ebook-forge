@@ -406,10 +406,15 @@ def _pack_offsets(si: _StreamsInfo) -> list[int]:
 def read_all(path: str | Path, *,
              max_total: int | None = None,
              max_entry: int | None = None,
-             max_entries: int | None = None) -> dict[str, bytes]:
+             max_entries: int | None = None,
+             budget: "limits.Budget | None" = None) -> dict[str, bytes]:
     """把 7z 里所有文件解出来 → {名字: 内容}。
 
     max_total / max_entry / max_entries：解压前按 7z 头里的声明大小拒绝炸弹包。
+
+    budget：跨层共享的预算。CB7/CBC 是「7z 里套 ZIP」，外层解出来的字节
+    内层不该再拿一份全新额度 —— 否则 2 层嵌套就能吃掉 2 倍内存。传同一个
+    Budget 进来，外层解出多少就从里面扣多少，内层只剩剩下的。
 
     ⚠️ 默认值取 limits 里的那一套，不要在这里另写一份常量。
     早先这里硬编码 4GB/256MB/5000，和 limits.py 各说各话：
@@ -418,6 +423,10 @@ def read_all(path: str | Path, *,
     max_total = limits.MAX_TOTAL_BYTES if max_total is None else max_total
     max_entry = limits.MAX_ENTRY_BYTES if max_entry is None else max_entry
     max_entries = limits.MAX_ENTRIES if max_entries is None else max_entries
+    # 有外部预算就按它剩下的额度来判，别各算各的
+    if budget is not None:
+        max_total = min(max_total, budget.bytes_left)
+        max_entries = min(max_entries, budget.entries_left)
     path = Path(path)
     data = path.read_bytes()
     if not data.startswith(SIG):
@@ -524,4 +533,9 @@ def read_all(path: str | Path, *,
             out[name] = next(it)
         except StopIteration:
             break
+
+    # 结算到共享预算：外层解出来的这些字节，内层不能再要一遍
+    if budget is not None:
+        for name, blob in out.items():
+            budget.take_entry(name, len(blob))
     return out

@@ -65,6 +65,18 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: 从仓库拉回刚推的镜像
+        run: |
+          set -e
+          IMG="${{ env.IMAGE }}:${{ steps.meta.outputs.ver }}"
+          # ⚠️ build-push-action 用的是 docker-container driver，构建结果在 builder
+          # 自己的存储里，**不会**自动落到本机 Docker Engine。干净 runner 上直接
+          # `docker image inspect` 会找不到 tag，后面 docker run 也没镜像可跑。
+          # 所以必须先删本地同名（如果有）再从 registry 真拉一遍 ——
+          # 顺便也证明了「推上去的东西确实拉得下来」。
+          docker rmi "$IMG" 2>/dev/null || true
+          docker pull "$IMG"
+
       - name: 确认镜像就是这次提交构建的
         run: |
           set -e
@@ -85,10 +97,15 @@ jobs:
         run: |
           set -e
           IMG="${{ env.IMAGE }}:${{ steps.meta.outputs.ver }}"
-          # 中文字体是 PDF 中文渲染的命根子，镜像里少了它 health 照样 200，
-          # 用户一转中文书才炸。这里先验一遍。
-          docker run --rm --entrypoint sh "$IMG" -c 'ls -la /app/assets/fonts/ && test -n "$(ls /app/assets/fonts/ 2>/dev/null)"' \
-            || { echo "✗ 镜像里没有字体"; exit 1; }
+          # ⚠️ 字体装在 /usr/share/fonts/truetype/noto/，不是 /app/assets/fonts/
+          # （Dockerfile 是 COPY 过去的，源码目录不留在镜像里）。早先这里写错路径，
+          # 镜像明明有字体也会被判失败。
+          # 容器默认 USER 10000，所以 `test -r` 验的就是「非 root 读不读得到」。
+          docker run --rm --entrypoint sh "$IMG" -c \
+            'test -r /usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf \
+             && ls -la /usr/share/fonts/truetype/noto/ \
+             && echo "字体存在且 uid $(id -u) 可读"' \
+            || { echo "✗ 字体缺失或非 root 读不到"; exit 1; }
           docker run --rm --entrypoint python3 "$IMG" -c "import fastapi, uvicorn, multipart; print('web 依赖 OK')"
 
       - name: 端到端冒烟（上传→转换→下载）
@@ -97,3 +114,7 @@ jobs:
       - name: 失败时导出容器日志
         if: failure()
         run: docker logs smoke 2>&1 | tail -60 || true
+
+      - name: 清理容器
+        if: always()
+        run: docker rm -f smoke 2>/dev/null || true

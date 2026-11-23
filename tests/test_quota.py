@@ -44,6 +44,10 @@ class QuotaTests(unittest.TestCase):
             mock.patch.dict(uploads._inflight, {"total": 0}, clear=True),
             mock.patch.dict(uploads._inflight_token, {}, clear=True),
             mock.patch.dict(uploads._inflight_sid, {}, clear=True),
+            # 实时账本是模块级缓存，用例之间必须复位，否则串味
+            mock.patch.dict(uploads._live,
+                            {"total": 0, "tok": {}, "sid": {}, "count": 0,
+                             "loaded": False}, clear=True),
         ]
         for p in self.patches:
             p.start()
@@ -98,24 +102,35 @@ class QuotaTests(unittest.TestCase):
 
     # ⑤ 并发：同时申请，合计不能越过上限
     def test_concurrent_admit_never_exceeds(self):
-        """20 个线程同时各要 200KB，总额度只有 4MB → 最多放行 20 个中的一部分，
-        但**放行的总量绝不超过 4MB**。"""
+        """20 个线程同时各要 512KB = 10MB，总额度只有 4MB。
+
+        早先这里是 20 × 200KB = 4000KB —— 本来就够不到 4000KB 的 4MB 上限，
+        不管逻辑对错都会过，等于没测。现在申请量必须是上限的 2.5 倍，
+        才有「必须拒绝一部分」的语义。
+        """
         allowed = []
         lock = threading.Lock()
-        gate = threading.Barrier(20)
+        # 两道屏障缺一不可：只同步「开始 admit」的话，先 admit 完的线程会
+        # 立刻 finish 把额度还回去，后到的线程看到空账，照样全放行 ——
+        # 测出来是「通过」但其实什么都没验到（第一版就是这么假通过的）。
+        start = threading.Barrier(20)
+        done = threading.Barrier(20)
+        tickets = []
+        tickets_lock = threading.Lock()
 
         def worker():
-            t = uploads.begin("tok", "sid")
+            t = uploads.begin("", "")     # 不带 token/sid，专测总额度
+            with tickets_lock:
+                tickets.append(t)
+            start.wait(timeout=10)
             try:
-                gate.wait(timeout=10)
-                try:
-                    t.admit(200 * KB)
-                    with lock:
-                        allowed.append(200 * KB)
-                except uploads.QuotaError:
-                    pass
-            finally:
-                t.finish()
+                t.admit(512 * KB)
+                with lock:
+                    allowed.append(512 * KB)
+            except uploads.QuotaError:
+                pass
+            done.wait(timeout=10)         # 等所有人都 admit 完
+            t.finish()                    # 再统一归还
 
         threads = [threading.Thread(target=worker) for _ in range(20)]
         for th in threads:
@@ -126,6 +141,89 @@ class QuotaTests(unittest.TestCase):
         self.assertLessEqual(sum(allowed), uploads.QUOTA_TOTAL_BYTES,
                              "并发申请把总量写超了")
         self.assertGreater(len(allowed), 0, "一个都没放行，说明额度算错了")
+        self.assertLess(len(allowed), 20, "总量超上限却全放行了，说明限额没生效")
+
+    # ⑤b 快照过期：A 登记落盘后，B 拿旧快照必须被拦住
+    def test_stale_snapshot_cannot_oversubscribe(self):
+        """清单 P1-02 的确定性复现。
+
+        时间线：A、B 同时 begin（都看到占用 0）→ A 传完 3MB 登记落盘 → B 再要 3MB。
+        旧实现里 B 用 begin 时拍的快照 base=0，判出来 3MB < 4MB 就放行了，
+        实际总量 6MB 撞穿上限。现在 admit 每次读实时账本，B 必须被拒。
+        """
+        a = uploads.begin("", "")
+        b = uploads.begin("", "")          # B 的快照是「占用 0」那一刻的
+        try:
+            a.admit(3 << 20)
+            f = self.upload_dir / f"{uploads.new_file_id()}.bin"
+            f.write_bytes(b"x" * (3 << 20))
+            uploads.register(f, "a.bin", 3 << 20)   # A 正式登记
+            a.finish()
+
+            self.assertEqual(uploads.usage()["total"], 3 << 20)
+            with self.assertRaises(uploads.QuotaError):
+                b.admit(3 << 20)        # 只剩 1MB，要 3MB 必须拒
+        finally:
+            a.finish()
+            b.finish()
+
+    # ⑤c 链接级也要用实时值，不能吃旧快照
+    def test_stale_snapshot_on_token_quota(self):
+        a = uploads.begin("tok-A", "s1")
+        b = uploads.begin("tok-A", "s2")   # 同一条链接、不同会话
+        try:
+            a.admit(1_500 * KB)
+            f = self.upload_dir / f"{uploads.new_file_id()}.bin"
+            f.write_bytes(b"x" * (1_500 * KB))
+            uploads.register(f, "a.bin", 1_500 * KB, token="tok-A", sid="s1")
+            a.finish()
+            with self.assertRaises(uploads.QuotaError) as ctx:
+                b.admit(1_000 * KB)        # 额度 2MB，A 已占 1.5MB
+            self.assertIn("分享链接", str(ctx.exception))
+        finally:
+            a.finish()
+            b.finish()
+
+    # ⑤d 会话级同理
+    def test_stale_snapshot_on_sid_quota(self):
+        with mock.patch.object(uploads, "QUOTA_SID_BYTES", 2 << 20), \
+             mock.patch.object(uploads, "QUOTA_TOKEN_BYTES", 64 << 20):
+            a = uploads.begin("tok-A", "same-sid")
+            b = uploads.begin("tok-A", "same-sid")
+            try:
+                a.admit(1_500 * KB)
+                f = self.upload_dir / f"{uploads.new_file_id()}.bin"
+                f.write_bytes(b"x" * (1_500 * KB))
+                uploads.register(f, "a.bin", 1_500 * KB, token="tok-A", sid="same-sid")
+                a.finish()
+                with self.assertRaises(uploads.QuotaError) as ctx:
+                    b.admit(1_000 * KB)
+                self.assertIn("会话", str(ctx.exception))
+            finally:
+                a.finish()
+                b.finish()
+
+    # ⑤e 中止/失败后额度必须还回来
+    def test_aborted_upload_returns_quota(self):
+        before = uploads.usage()["total"]
+        t = uploads.begin("", "")
+        t.admit(3 << 20)
+        self.assertEqual(uploads._inflight["total"], 3 << 20)
+        t.finish()          # 模拟中途失败：没有 register，直接收尾
+        self.assertEqual(uploads._inflight["total"], 0, "inflight 泄漏，额度永久变少")
+        self.assertEqual(uploads.usage()["total"], before)
+        # 额度真的回来了：现在还能再占 3MB
+        t2 = uploads.begin("", "")
+        try:
+            t2.admit(3 << 20)
+        finally:
+            t2.finish()
+
+    # ⑤f 正常多文件上传不能被新逻辑误伤
+    def test_normal_multi_file_upload_still_works(self):
+        for i in range(8):        # 8 × 400KB = 3.2MB < 4MB 总额度
+            self._upload(400 * KB, token=f"tok-N{i}", sid=f"sess-N{i}")
+        self.assertEqual(uploads.usage()["total"], 8 * 400 * KB)
 
     # ⑥ 失败后记账必须归零
     def test_finish_releases_inflight(self):

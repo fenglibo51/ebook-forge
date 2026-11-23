@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import store
+from . import store, uploads
 from bookforge.naming import safe_stem
 
 
@@ -191,6 +191,11 @@ def _run(job: Job) -> None:
                 item.out_size = Path(item.out).stat().st_size if item.out else 0
             except OSError:
                 item.out_size = 0
+            # 结果落在上传缓存目录时，登记进索引：
+            # 否则 purge_orphans 会把它当孤儿删掉（不到 24 小时保留期就没了），
+            # 而且这部分磁盘占用也算不进配额。
+            if item.out:
+                _track_output(Path(item.out), item.out_size, job)
 
             # 删源文件：只在转换成功后做，失败绝不动源文件
             if job.options.get("delete_source"):
@@ -263,6 +268,23 @@ def _run(job: Job) -> None:
 def _join_note(a: str, b: str) -> str:
     return (a + " · " + b) if a else b
 
+
+
+def _track_output(path: Path, size: int, job: "Job") -> None:
+    """转换结果落在上传缓存目录时，把它登记进索引。
+
+    为什么只登记「缓存目录里的」：书库里的转换结果是用户自己的正式产物，
+    放在他自己的目录里，不该纳入缓存 TTL 清理，也不该算进缓存配额。
+    只有上传缓存目录里的东西是我们代为保管的临时结果。
+    """
+    try:
+        cache_dir = (store.DATA_DIR / "uploads").resolve()
+        if path.resolve().parent != cache_dir:
+            return
+        uploads.register_output(path, size, token=job.share_token,
+                                sid=job.session_id, job_id=job.id)
+    except Exception as e:                     # 登记失败不该让转换结果作废
+        print(f"[jobs] 登记转换结果失败（不影响本次转换）：{e}")
 
 
 def _out_path(src: Path, target: str, name: str, output_dir: str = "") -> Path:

@@ -56,6 +56,50 @@ _inflight = {"total": 0}
 _inflight_token: dict[str, int] = {}
 _inflight_sid: dict[str, int] = {}
 
+# ── 实时账本 ────────────────────────────────────────────────────────────
+# 为什么需要它：admit() 每块数据都要判一次额度。如果每次都去读
+# uploads.json（2000 条记录 ≈ 8ms），一个 1GB 文件光判额度就要 8 秒。
+#
+# 早先的写法更糟 —— Ticket 在 begin() 时把占用拍了张快照，之后一直用旧值：
+#   A、B 同时 begin()，都看到 base=0；
+#   A 传完 3MB 登记落盘、finish；B 仍拿旧快照，再申请 3MB 照样放行。
+#   结果总量 6MB 撞穿 4MB 上限。实测复现过。
+#
+# 现在：内存里维护一份实时合计，register/forget/drop/purge 时增量增减，
+# admit 只读它。begin() 时从 uploads.json 全量校准一次（一次上传 8ms，可接受）。
+#
+# ⚠️ 前提是单进程（uvicorn 单 worker，当前部署就是这样）。
+# 多 worker 时各进程账本会各算各的 —— 那时候得改成共享存储或在 SQLite 里做。
+_live: dict[str, Any] = {"total": 0, "tok": {}, "sid": {}, "count": 0, "loaded": False}
+
+
+def _live_sync() -> None:
+    """把实时账本和 uploads.json 对齐。调用方必须已持有 _lock。"""
+    u = usage()
+    _live["total"] = u["total"]
+    _live["tok"] = dict(u["by_token"])
+    _live["sid"] = dict(u["by_sid"])
+    _live["count"] = u["files"]
+    _live["loaded"] = True
+
+
+def _live_bump(rec: dict[str, Any], sign: int) -> None:
+    """加/减一条记录的占用。调用方必须已持有 _lock。"""
+    if not _live["loaded"]:
+        return                     # 没校准过就别瞎改，下次 sync 会算对
+    n = int(rec.get("size", 0) or 0) * sign
+    _live["total"] = max(0, _live["total"] + n)
+    _live["count"] += sign
+    for key, bucket in (("token", "tok"), ("sid", "sid")):
+        k = str(rec.get(key, "") or "")
+        if not k:
+            continue
+        v = _live[bucket].get(k, 0) + n
+        if v > 0:
+            _live[bucket][k] = v
+        else:
+            _live[bucket].pop(k, None)
+
 
 class QuotaError(Exception):
     """累计配额已满。调用方转成 413 + 人话提示。"""
@@ -97,7 +141,7 @@ def register(path: Path, display_name: str, size: int, *,
     fid = file_id or new_file_id()
     with _lock:
         data = _load()
-        data[fid] = {
+        rec = {
             "path": str(path),
             "name": display_name,
             "size": size,
@@ -105,8 +149,42 @@ def register(path: Path, display_name: str, size: int, *,
             "token": token,
             "sid": sid,
             "created": int(time.time()),
+            "kind": "upload",
         }
+        data[fid] = rec
         _save(data)
+        _live_bump(rec, +1)
+    return fid
+
+
+def register_output(path: Path, size: int, *, token: str = "", sid: str = "",
+                    job_id: str = "") -> str:
+    """把转换结果登记进索引。
+
+    为什么不登记会出事：结果 PDF 就放在 uploads/ 里，而 purge_orphans()
+    只认 uploads.json 里有的文件 —— 没登记的超过 1 小时就被当垃圾删掉，
+    用户明明还在 24 小时保留期内却下载不到，而且这部分磁盘占用也不计入配额。
+    （实测复现过：转换产物 2 小时后再清理就被扫掉了。）
+
+    kind="output" 用来和上传源文件区分：清理规则一样（都按 TTL），
+    但排查时能一眼看出这个文件是哪儿来的。
+    """
+    fid = "out_" + new_file_id()
+    with _lock:
+        data = _load()
+        rec = {
+            "path": str(path),
+            "name": Path(path).name,
+            "size": size,
+            "token": token,
+            "sid": sid,
+            "job": job_id,
+            "created": int(time.time()),
+            "kind": "output",
+        }
+        data[fid] = rec
+        _save(data)
+        _live_bump(rec, +1)
     return fid
 
 
@@ -130,8 +208,10 @@ def owns(file_id: str, token: str, sid: str) -> dict[str, Any] | None:
 def forget(file_id: str) -> None:
     with _lock:
         data = _load()
-        if data.pop(file_id, None) is not None:
+        rec = data.pop(file_id, None)
+        if rec is not None:
             _save(data)
+            _live_bump(rec, -1)
 
 
 def drop_token(token: str) -> int:
@@ -151,6 +231,7 @@ def drop_token(token: str) -> int:
                 Path(data[k].get("path", "")).unlink()
             except OSError:
                 pass
+            _live_bump(data[k], -1)
             data.pop(k, None)
         if doomed:
             _save(data)
@@ -170,6 +251,7 @@ def drop_sid(token: str, sid: str) -> int:
                 Path(data[k].get("path", "")).unlink()
             except OSError:
                 pass
+            _live_bump(data[k], -1)
             data.pop(k, None)
         if doomed:
             _save(data)
@@ -182,6 +264,7 @@ def purge_missing() -> int:
         data = _load()
         dead = [k for k, v in data.items() if not Path(v.get("path", "")).is_file()]
         for k in dead:
+            _live_bump(data[k], -1)
             data.pop(k, None)
         if dead:
             _save(data)
@@ -225,8 +308,7 @@ class Ticket:
     所以两个并发上传不可能一起越过上限（不需要事后补偿）。
     """
 
-    __slots__ = ("token", "sid", "written", "base_total", "base_token", "base_sid",
-                 "closed")
+    __slots__ = ("token", "sid", "written", "closed")
 
     def __init__(self, token: str, sid: str):
         self.token = token
@@ -234,32 +316,34 @@ class Ticket:
         self.written = 0
         self.closed = False
         with _lock:
-            u = usage()
-            self.base_total = u["total"]
-            self.base_token = u["by_token"].get(token, 0) if token else 0
-            self.base_sid = u["by_sid"].get(sid, 0) if sid else 0
+            # 每次开始上传都从磁盘校准一次账本 —— 万一索引被外部改过
+            # （手动编辑、别的进程），这里能纠回来。一次上传只花一次。
+            _live_sync()
 
     def admit(self, nbytes: int) -> None:
         """再写 nbytes 允许吗？不允许抛 QuotaError。"""
         if self.closed or nbytes <= 0:
             return
         with _lock:
+            # 全局「已登记 + 别处正在写 + 本次已写」—— 每次都用最新值，
+            # 不依赖 Ticket 创建时的快照（快照会过期，实测能撞穿上限）
             others = _inflight["total"] - self.written
-            if self.base_total + others + self.written + nbytes > QUOTA_TOTAL_BYTES:
+            used_total = _live["total"] + others + self.written
+            if used_total + nbytes > QUOTA_TOTAL_BYTES:
                 raise QuotaError(
-                    f"上传目录已满：当前用 {_fmt(self.base_total + others + self.written)}，"
+                    f"上传目录已满：当前用 {_fmt(used_total)}，"
                     f"上限 {_fmt(QUOTA_TOTAL_BYTES)}。"
                     "旧文件会在 24 小时后自动清理，也可以在设置页手动清")
             if self.token:
                 other_t = _inflight_token.get(self.token, 0) - self.written
-                used = self.base_token + other_t + self.written
+                used = _live["tok"].get(self.token, 0) + other_t + self.written
                 if used + nbytes > QUOTA_TOKEN_BYTES:
                     raise QuotaError(
                         f"这条分享链接的额度用完了：已用 {_fmt(used)}，"
                         f"上限 {_fmt(QUOTA_TOKEN_BYTES)}")
             if self.sid:
                 other_s = _inflight_sid.get(self.sid, 0) - self.written
-                used = self.base_sid + other_s + self.written
+                used = _live["sid"].get(self.sid, 0) + other_s + self.written
                 if used + nbytes > QUOTA_SID_BYTES:
                     raise QuotaError(
                         f"当前会话的上传额度用完了：已用 {_fmt(used)}，"

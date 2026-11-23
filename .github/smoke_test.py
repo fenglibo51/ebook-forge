@@ -8,7 +8,11 @@
 所以这里必须做完整链路，并且校验三件用户真正会看到的事：
     ① 输出文件名是原始书名，不是随机存储名（P1-1）
     ② 下载下来确实是那个文件（PDF 魔数 + 大小）
-    ③ 输出里能看到自己的内容（文字提取得到关键词）
+    ③ 中文正文真的进了产物 —— 走一趟 txt → epub → txt，看关键词还在不在
+
+第 ③ 条为什么绕这一圈：PDF 只做字节校验的话，字体缺失导致中文全渲染成
+方块也一样能过。epub 是可逆的文字容器，把结果再转回 txt 一比，正文有没有
+丢、编码有没有错就藏不住了。
 
 只用标准库，本地和生产同一个脚本：
     python3 .github/smoke_test.py --base http://127.0.0.1:8600
@@ -139,6 +143,72 @@ def main() -> int:
     disp = headers.get("Content-Disposition", "")
     if "filename" in disp and "%" not in disp and "冒烟" not in disp:
         print(f"  ⚠️ Content-Disposition: {disp}")
+
+    # ⑦ 中文正文往返：txt → epub → txt，关键词必须还在
+    #    （PDF 那条只能证明「文件是 PDF」，证明不了字真写进去了）
+    marker = "SMOKE-MARKER-42"
+    body, ctype = _multipart("files", display, payload)
+    st, raw, _ = _req(base + "/api/upload", body, {"Content-Type": ctype}, "POST")
+    if st != 200:
+        fail(f"往返测试上传失败 {st}")
+    fid2 = json.loads(raw)["files"][0]["file_id"]
+
+    st, raw, _ = _req(base + "/api/jobs",
+                      json.dumps({"files": [{"file_id": fid2, "name": display,
+                                             "size": len(payload)}],
+                                  "target": "epub"}).encode(),
+                      {"Content-Type": "application/json"}, "POST")
+    if st != 200:
+        fail(f"转 epub 失败 {st} {raw[:200]}")
+    jid2 = json.loads(raw)["job_id"]
+    st2 = {}
+    for _ in range(120):
+        st, raw, _ = _req(f"{base}/api/jobs/{jid2}")
+        st2 = json.loads(raw)
+        if st2.get("status") in ("done", "failed", "canceled"):
+            break
+        time.sleep(1)
+    if st2.get("status") != "done":
+        fail(f"转 epub 没成功：{json.dumps(st2, ensure_ascii=False)[:400]}")
+    epub_path = st2["items"][0]["out"]
+    st, epub_bytes, _ = _req(base + "/api/download?path=" + urllib.parse.quote(epub_path))
+    if st != 200 or not epub_bytes.startswith(b"PK"):
+        fail(f"下载 epub 异常 {st}，前 4 字节 {epub_bytes[:4]!r}")
+    ok(f"txt → epub 成功（{len(epub_bytes)} 字节）")
+
+    # epub 再传回去转 txt，看正文是否原样还在
+    body, ctype = _multipart("files", "往返.epub", epub_bytes)
+    st, raw, _ = _req(base + "/api/upload", body, {"Content-Type": ctype}, "POST")
+    if st != 200:
+        fail(f"epub 回传失败 {st}")
+    fid3 = json.loads(raw)["files"][0]["file_id"]
+    st, raw, _ = _req(base + "/api/jobs",
+                      json.dumps({"files": [{"file_id": fid3, "name": "往返.epub",
+                                             "size": len(epub_bytes)}],
+                                  "target": "txt"}).encode(),
+                      {"Content-Type": "application/json"}, "POST")
+    if st != 200:
+        fail(f"epub → txt 失败 {st} {raw[:200]}")
+    jid3 = json.loads(raw)["job_id"]
+    st3 = {}
+    for _ in range(120):
+        st, raw, _ = _req(f"{base}/api/jobs/{jid3}")
+        st3 = json.loads(raw)
+        if st3.get("status") in ("done", "failed", "canceled"):
+            break
+        time.sleep(1)
+    if st3.get("status") != "done":
+        fail(f"epub → txt 没成功：{json.dumps(st3, ensure_ascii=False)[:400]}")
+    txt_path = st3["items"][0]["out"]
+    st, txt_bytes, _ = _req(base + "/api/download?path=" + urllib.parse.quote(txt_path))
+    if st != 200:
+        fail(f"下载往返 txt 失败 {st}")
+    text = txt_bytes.decode("utf-8", "replace")
+    if marker not in text:
+        fail(f"往返后正文丢了标记词 {marker}，实际拿到：{text[:200]!r}")
+    if "冒烟测试内容" not in text:
+        fail(f"往返后中文正文损坏：{text[:200]!r}")
+    ok(f"中文正文往返完好（关键词 {marker} 命中）")
 
     if not args.keep:
         pass  # 服务端自己有 TTL 清理，脚本不额外删

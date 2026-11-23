@@ -237,6 +237,18 @@ async def _save_loop(files: list[UploadFile], ticket: "uploads.Ticket",
                     dest.unlink()
                 except OSError:
                     pass
+            # 整批要么全成，要么一个都不留。
+            # 早先只清当前这个文件：传 3 个、第 2 个超限时，第 1 个已经登记落盘
+            # 并占着额度，接口却返回 413 —— 用户重试一次就重复占一份配额，
+            # 而且他根本不知道有个半截批次留在服务器上。
+            for rec in saved:
+                info = uploads.get(rec["file_id"]) or {}
+                try:
+                    Path(str(info.get("path", ""))).unlink()
+                except OSError:
+                    pass
+                uploads.forget(rec["file_id"])
+            saved.clear()
             raise
         # 只回 file_id，不回服务器路径 —— 访客拿不到别人的路径就没法冒用
         saved.append({"file_id": fid, "name": name, "size": size})

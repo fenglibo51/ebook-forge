@@ -141,15 +141,17 @@ def read_cb7(path: str | Path) -> ComicBook:
     from . import sevenz
 
     path = Path(path)
-    files = sevenz.read_all(path)
+    # 一个包一次转换只建一份预算：外层 7z 解出多少先扣掉，内层 ZIP 只能用剩下的。
+    # 早先是 read_all() 自己按完整额度解一遍、内层再从零拿一份 —— 2 层嵌套就能
+    # 吃掉 2 倍内存，跟「跨层共享」的意图正好相反。
+    budget = limits.Budget()
+    files = sevenz.read_all(path, budget=budget)
 
     # CBC 里可能嵌着 cbz/zip：递归一层
     nested = [n for n in files if Path(n).suffix.lower() in (".cbz", ".zip")]
     if nested and not any(Path(n).suffix.lower() in IMAGE_EXTS for n in files):
         import io
         merged: list[Page] = []
-        # 内层 ZIP 不重置额度：一个包一次转换只有这一份预算
-        budget = limits.Budget()
         for n in sorted(nested, key=natural_key):
             try:
                 with zipfile.ZipFile(io.BytesIO(files[n])) as zf:

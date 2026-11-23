@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _testenv                                            # noqa: E402,F401
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
-from bookforge.formats import cbz, limits                # noqa: E402
+from bookforge.formats import cbz, limits, sevenz        # noqa: E402
 from fixtures.gen_7z import build                        # noqa: E402
 
 
@@ -141,6 +141,50 @@ class CbcBudgetTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 cbz.read_cb7(p)
         self.assertIn("超过单文件上限", str(ctx.exception))
+
+
+
+    # ── P2-01：外层 7z 与内层 ZIP 共用同一份预算 ──────────────────────────
+
+    def test_outer_7z_consumes_shared_budget(self):
+        """read_all() 解出多少字节，就从同一份 Budget 里扣多少。
+
+        早先是外层按完整额度解一遍、内层再从零拿一份 —— 2 层嵌套吃 2 倍内存，
+        跟「跨层共享」完全相反。现在外层解完先结算，内层只剩剩下的。
+        """
+        payload = b"A" * 4000
+        data = build({"a.bin": payload})
+        p = self.tmp / "one.7z"
+        p.write_bytes(data)
+
+        budget = limits.Budget(total=100_000, entries=50)
+        got = sevenz.read_all(p, budget=budget)
+        self.assertEqual(got["a.bin"], payload)
+        self.assertEqual(budget.bytes_left, 100_000 - len(payload),
+                         "外层解出的字节没从共享预算里扣掉")
+
+    def test_nested_budget_shared_end_to_end(self):
+        """真正的端到端：同一个 Budget 传进去，外层扣完内层不够就拒。"""
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("p1.png", b"\x89PNG" + b"x" * 3000)
+        p = self.tmp / "combo2.7z"
+        p.write_bytes(build({"vol1.cbz": inner.getvalue()}))
+
+        budget = limits.Budget(total=100_000, entries=50)
+        files = sevenz.read_all(p, budget=budget)
+        spent = sum(len(v) for v in files.values())
+        self.assertLess(budget.bytes_left, 100_000)
+        self.assertEqual(budget.bytes_left, 100_000 - spent)
+
+        # 把外层吃剩的额度再压到几百字节 → 内层 3KB 的图必须被拒。
+        # 早先这里写的是 budget.bytes_left - 100（还剩 96KB），拿 3KB 去撞
+        # 96KB 当然撞不穿 —— 测试红的是写法，不是代码。
+        tiny = limits.Budget(total=512, entries=50)
+        with zipfile.ZipFile(io.BytesIO(files["vol1.cbz"])) as zf:
+            with self.assertRaises(limits.LimitError):
+                limits.check_zip(zf, tiny)
+
 
 
 if __name__ == "__main__":
