@@ -53,6 +53,13 @@ async def _unhandled(_request, exc: Exception) -> JSONResponse:
 
 app.include_router(router)
 
+
+@app.get("/s/{token}")
+def share_page(token: str):
+    """分享链接也渲染同一份前端，由前端自己切到受限模式。"""
+    from fastapi.responses import FileResponse
+    return FileResponse(FRONTEND / "index.html")
+
 # 静态前端挂根路径（必须在 API 之后注册，否则 /api 会被吃掉）
 if FRONTEND.exists():
     app.mount("/", StaticFiles(directory=str(FRONTEND), html=True), name="ui")

@@ -57,9 +57,16 @@
 
     <!-- ==================== ① 格式转换 ==================== -->
     <section id="page-convert" class="page active">
-      <div class="crumb">EbookForge <span class="sep">/</span> <b>格式转换</b></div>
-      <h1>把书交给我</h1>
-      <p class="sub">图片原字节直嵌，能无损就不重压。转换前我会先看清这本书是什么结构，再决定怎么转。</p>
+      <div class="page-head">
+        <div>
+          <div class="crumb">EbookForge <span class="sep">/</span> <b>格式转换</b></div>
+          <h1>把书交给我</h1>
+          <p class="sub">图片原字节直嵌，能无损就不重压。转换前我会先看清这本书是什么结构，再决定怎么转。</p>
+        </div>
+        <button class="btn-ghost" id="shareBtn" title="生成一条 24 小时有效的链接，别人只能转换和下载自己的结果">
+          🔗 生成分享链接
+        </button>
+      </div>
 
       <div class="grid-2">
         <section class="card">
@@ -398,6 +405,35 @@
       <span class="grow"></span>
       <button class="btn-ghost" id="browseCancel">取消</button>
       <button class="btn btn-primary" id="browseAdd" disabled>加入队列</button>
+    </div>
+  </div>
+</div>
+
+<!-- 分享链接弹窗 -->
+<div class="modal" id="shareModal">
+  <div class="modal-backdrop" id="shareBackdrop"></div>
+  <div class="modal-box" style="width:min(580px,100%)">
+    <div class="modal-hd">
+      <h3>分享链接</h3>
+      <button class="modal-x" id="shareClose" title="关闭">✕</button>
+    </div>
+    <div class="modal-body" style="padding:20px 22px">
+      <p class="hint" style="margin:0 0 14px">
+        把这条链接发给对方。持有链接的人<b>只能上传、转换、下载自己的结果</b> ——
+        看不到你的书库、转换记录和设置，也删不掉任何文件。
+        链接 <b>24 小时后自动失效</b>，随时可以撤销。
+      </p>
+      <div class="path-row">
+        <input class="input" id="shareUrl" readonly placeholder="点下面「生成新链接」">
+        <button class="btn-sm" id="shareCopy">复制</button>
+      </div>
+      <p class="hint" id="shareMeta" style="margin-top:10px"></p>
+      <div id="shareList" style="margin-top:16px"></div>
+    </div>
+    <div class="modal-ft">
+      <span class="grow"></span>
+      <button class="btn-ghost" id="shareDone">关闭</button>
+      <button class="btn btn-primary" id="shareCreate">生成新链接</button>
     </div>
   </div>
 </div>

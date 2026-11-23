@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import jobs, store
+from . import jobs, share, store
 
 router = APIRouter(prefix="/api")
 
@@ -21,11 +21,13 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── 配额（都能用环境变量调） ──────────────────────────────────────────────
 MB = 1024 * 1024
-MAX_UPLOAD_MB = int(os.environ.get("EBOOKFORGE_MAX_UPLOAD_MB", "2048"))      # 单次上传总量
-MAX_FILE_MB = int(os.environ.get("EBOOKFORGE_MAX_FILE_MB", "1024"))          # 单文件
-MAX_FILES_UPLOAD = int(os.environ.get("EBOOKFORGE_MAX_FILES_UPLOAD", "50"))  # 单次文件数
-MAX_FILES_TASK = int(os.environ.get("EBOOKFORGE_MAX_FILES_TASK", "50"))      # 单任务文件数
-MAX_QUEUE = int(os.environ.get("EBOOKFORGE_MAX_QUEUE", "20"))                # 排队任务上限
+# 单次上传总量：批量场景的约束（磁盘），默认 8 GB
+MAX_UPLOAD_MB = int(os.environ.get("EBOOKFORGE_MAX_UPLOAD_MB", "8192"))
+# 单文件：电子书几十上百 MB 常见，1 GB 足够；再大引擎整本读内存也扛不住
+MAX_FILE_MB = int(os.environ.get("EBOOKFORGE_MAX_FILE_MB", "1024"))
+MAX_FILES_UPLOAD = int(os.environ.get("EBOOKFORGE_MAX_FILES_UPLOAD", "50"))
+MAX_FILES_TASK = int(os.environ.get("EBOOKFORGE_MAX_FILES_TASK", "50"))
+MAX_QUEUE = int(os.environ.get("EBOOKFORGE_MAX_QUEUE", "20"))
 
 # 目录筛选扫描结果缓存：{(base, fmt): (时间戳, 目录集合, 是否截断)}
 _SCAN_CACHE: dict[tuple[str, str], tuple[float, set, bool, int]] = {}
@@ -397,6 +399,121 @@ def clear_cache() -> dict[str, Any]:
             except OSError:
                 pass
     return {"removed": info["files"], "freed": info["size"]}
+
+
+# ── 分享链接（管理端，只有主人用） ────────────────────────────────────────
+
+class ShareIn(BaseModel):
+    ttl_hours: int = 24          # 0 = 不设期限
+    note: str = ""
+
+
+@router.post("/shares")
+def create_share(body: ShareIn) -> dict[str, Any]:
+    ttl = int(body.ttl_hours) * 3600 if body.ttl_hours else 0
+    r = share.create(ttl=ttl, note=body.note)
+    return {"token": r["token"], "path": f"/s/{r['token']}",
+            "expires": r["expires"], "note": r["note"]}
+
+
+@router.get("/shares")
+def list_shares() -> dict[str, Any]:
+    return {"items": share.list_all()}
+
+
+@router.delete("/shares/{token}")
+def revoke_share(token: str) -> dict[str, Any]:
+    return {"revoked": share.revoke(token)}
+
+
+# ── 分享链接（访客端，权限只到「转换」） ──────────────────────────────────
+
+def _share_ctx(t: str) -> dict[str, Any]:
+    entry = share.check(t)
+    if not entry:
+        raise HTTPException(403, "链接无效或已过期，找发链接的人重新生成")
+    return entry
+
+
+@router.post("/s/upload")
+async def share_upload(files: list[UploadFile], t: str = Query(...),
+                       sid: str = Query("")) -> dict[str, Any]:
+    """和一键上传同一个实现，只是强制走临时目录、不碰书库。"""
+    _share_ctx(t)
+    return await upload(files)
+
+
+@router.post("/s/jobs")
+def share_create_job(body: JobIn, t: str = Query(...), sid: str = Query(...)) -> dict[str, Any]:
+    entry = _share_ctx(t)
+    if not sid:
+        raise HTTPException(400, "缺少会话标识")
+    if not body.files:
+        raise HTTPException(400, "没有文件")
+    if len(body.files) > MAX_FILES_TASK:
+        raise HTTPException(413, f"单个任务最多 {MAX_FILES_TASK} 个文件")
+    if jobs.pending_count() >= MAX_QUEUE:
+        raise HTTPException(429, "现在排队的人有点多，稍后再试")
+
+    # 访客只能处理「自己刚上传到临时目录」的文件
+    for f in body.files:
+        p = Path(f.path).expanduser()
+        try:
+            p.resolve().relative_to(UPLOAD_DIR.resolve())
+        except (ValueError, OSError):
+            raise HTTPException(403, f"只能转换自己上传的文件：{f.name}")
+        if not p.is_file():
+            raise HTTPException(400, f"文件不存在：{f.name}")
+
+    # 强制收紧：不许删源文件、不许指定输出目录
+    opts = {
+        "page_size": str(body.options.get("page_size", "a5")),
+        "render_dpi": int(body.options.get("render_dpi", 200)),
+        "render_fallback": bool(body.options.get("render_fallback", True)),
+        "font_path": "",
+        "output_dir": "",
+        "delete_source": False,
+    }
+    cleanup_uploads()
+    job = jobs.submit([f.model_dump() for f in body.files],
+                      body.target.lower().lstrip("."), opts,
+                      share_token=t, session_id=sid)
+    return {"job_id": job.id, "total": job.total, "expires": entry.get("expires", 0)}
+
+
+@router.get("/s/jobs/{job_id}")
+def share_get_job(job_id: str, t: str = Query(...), sid: str = Query(...)) -> dict[str, Any]:
+    _share_ctx(t)
+    job = jobs.get(job_id)
+    # 只认自己这条链接、自己这个会话创建的任务
+    if not job or job.share_token != t or job.session_id != sid:
+        raise HTTPException(404, "任务不存在")
+    data = job.to_dict()
+    # 不给访客看服务器上的绝对路径
+    for it in data["items"]:
+        it.pop("out", None)
+    return data
+
+
+@router.get("/s/download/{job_id}/{index}")
+def share_download(job_id: str, index: int, t: str = Query(...),
+                   sid: str = Query(...)) -> FileResponse:
+    _share_ctx(t)
+    job = jobs.get(job_id)
+    if not job or job.share_token != t or job.session_id != sid:
+        raise HTTPException(404, "任务不存在")
+    if index < 0 or index >= len(job.items):
+        raise HTTPException(404, "没有这一项")
+    it = job.items[index]
+    if not it.out or not Path(it.out).is_file():
+        raise HTTPException(404, "文件还没生成好或已被清理")
+    # 路径必须落在上传目录里 —— 双重保险，防止任务记录被篡改
+    p = Path(it.out).resolve()
+    try:
+        p.relative_to(UPLOAD_DIR.resolve())
+    except ValueError:
+        raise HTTPException(403, "不允许下载这个文件")
+    return FileResponse(p, filename=p.name)
 
 
 # ── 下载 ──────────────────────────────────────────────────────────────────

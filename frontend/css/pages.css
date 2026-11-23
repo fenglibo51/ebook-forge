@@ -3,6 +3,14 @@
    ========================================================================== */
 
 /* ============ 转换页 ============ */
+.page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;flex-wrap:wrap}
+.page-head > div{flex:1;min-width:0}
+.page-head > button{flex:0 0 auto;margin-top:8px}
+@media (max-width:760px){.page-head > button{margin-top:0}}
+.share-item{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line);font-size:12.5px}
+.share-item .tk{font-family:var(--mono);font-size:11.5px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.share-item .rm{color:var(--fail);flex:0 0 auto;font-size:12px;padding:2px 8px;border-radius:6px}
+.share-item .rm:hover{background:var(--fail-bg)}
 .opt-row{display:flex;align-items:center;gap:12px;font-size:13px;color:var(--ink-2);margin-bottom:4px}
 .opt-row .opt-lab{flex:0 0 auto;color:var(--ink-3);font-size:12.5px}
 .seg-inline{display:inline-flex;border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden}

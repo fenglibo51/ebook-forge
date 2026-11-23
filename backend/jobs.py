@@ -47,6 +47,9 @@ class Job:
     items: list[JobItem]
     created: float = field(default_factory=time.time)
     status: str = "pending"        # pending / running / done
+    # 分享链接进来的任务记归属，防止拿到链接的人查/下别人的产物
+    share_token: str = ""
+    session_id: str = ""
     done: int = 0
     started: float = 0.0
     finished: float = 0.0
@@ -84,14 +87,21 @@ _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="convert")
 
 
 def submit(files: list[dict[str, Any]], target: str,
-           options: dict[str, Any]) -> Job:
-    """files: [{path, name, size}] —— path 是服务器上的绝对路径"""
+           options: dict[str, Any], *,
+           share_token: str = "", session_id: str = "") -> Job:
+    """files: [{path, name, size}] —— path 是服务器上的绝对路径
+
+    share_token / session_id 非空 = 走分享链接进来的，任务归属记下来，
+    之后查进度和下载都要核对，拿到链接的人看不到别人的东西。
+    """
     job = Job(
         id=uuid.uuid4().hex[:12],
         target=target,
         options=dict(options),
         items=[JobItem(src=f["path"], name=f["name"], size=f.get("size", 0))
                for f in files],
+        share_token=share_token,
+        session_id=session_id,
     )
     with _lock:
         _jobs[job.id] = job

@@ -303,7 +303,11 @@
     $$('.dlbtn[data-dl]', scope || document).forEach(b => {
       if (b.dataset.bound) return;
       b.dataset.bound = '1';
-      b.addEventListener('click', () => { window.location.href = API.downloadUrl(b.dataset.dl); });
+      b.addEventListener('click', () => {
+        const v = b.dataset.dl;
+        // 分享模式下这个值已经是完整的 /api/s/download/... 签名链接
+        window.location.href = v.startsWith('/api/s/') ? v : API.downloadUrl(v);
+      });
     });
   }
 
@@ -351,10 +355,14 @@
         const pct = s.total ? (s.done / s.total * 100) : 0;
         $('#progFill').style.width = pct + '%';
         $('#progStats').textContent = `${s.done} / ${s.total}` + (s.elapsed ? ` · 已用 ${s.elapsed} 秒` : '');
-        $('#progLog').innerHTML = s.items.map(it =>
-          logRow(`${it.name} → ${s.target.toUpperCase()}`, it.status, itemMeta(it),
-                 it.status === 'lossy', it.out)
-        ).join('');
+        $('#progLog').innerHTML = s.items.map((it, idx) => {
+          const done = ['ok', 'lossy'].includes(it.status);
+          const dl = done
+            ? (API.isShared ? API.shareDownloadUrl(s.id, idx) : it.out)
+            : '';
+          return logRow(`${it.name} → ${s.target.toUpperCase()}`, it.status,
+                        itemMeta(it), it.status === 'lossy', dl);
+        }).join('');
         bindDownloads($('#progLog'));
       });
       if (st) finishJob(st, 'convert');
@@ -870,6 +878,109 @@
       toast('清空失败：' + (e.message || e), 'fail');
     }
   });
+
+
+  /* ================= 分享模式（访客端） ================= */
+  // URL 是 /s/<token> 时：只留转换页，其他全部拿掉
+  (function applyShareMode() {
+    if (!API.isShared) return;
+    document.querySelectorAll('.nav-item').forEach(n => {
+      if (n.dataset.page !== 'convert') n.remove();
+    });
+    ['library', 'history', 'settings'].forEach(id => {
+      const el = document.getElementById('page-' + id);
+      if (el) el.remove();
+    });
+    ['pickServer', 'shareBtn'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.remove();
+    });
+    const jo = document.getElementById('jobOpts');
+    if (jo) jo.style.display = 'none';       // 访客没有输出目录/删源选项
+    document.title = 'EbookForge · 格式转换';
+    const lab = document.getElementById('engineLabel');
+    if (lab) lab.textContent = '在线';
+    // 顶部提示：这是分享链接
+    const head = document.querySelector('#page-convert .page-head');
+    if (head) {
+      const tip = document.createElement('div');
+      tip.className = 'warnbar';
+      tip.style.marginTop = '0';
+      tip.style.marginBottom = '20px';
+      tip.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 8v5M12 16h.01"/><circle cx="12" cy="12" r="9"/></svg>
+        <div>这是别人分享给你的转换入口。你上传的文件只在服务器临时存 24 小时，
+        转换结果可以直接下载。看不到对方的书库和历史记录。</div>`;
+      head.parentNode.insertBefore(tip, head.nextSibling);
+    }
+  })();
+
+  /* ================= 分享链接（主人端） ================= */
+  function openShareModal() {
+    const m = $('#shareModal');
+    if (!m) return;
+    m.classList.add('show');
+    loadShareList();
+  }
+  function closeShareModal() { $('#shareModal')?.classList.remove('show'); }
+
+  async function loadShareList() {
+    const host = $('#shareList');
+    if (!host) return;
+    try {
+      const r = await API.listShares();
+      if (!r.items.length) { host.innerHTML = ''; return; }
+      host.innerHTML = '<div class="hint" style="margin-bottom:6px">还在生效的链接</div>' +
+        r.items.map(it => {
+          const left = it.remaining === null ? '不设期限'
+            : it.remaining > 3600 ? `${Math.round(it.remaining / 3600)} 小时后失效`
+            : `${Math.round(it.remaining / 60)} 分钟后失效`;
+          return `<div class="share-item">
+            <span class="tk">${esc(it.token)}</span>
+            <span class="tag">${esc(left)}</span>
+            <button class="rm" data-revoke="${esc(it.token)}">撤销</button>
+          </div>`;
+        }).join('');
+      $$('#shareList [data-revoke]').forEach(b => b.addEventListener('click', async () => {
+        await API.revokeShare(b.dataset.revoke);
+        toast('已撤销');
+        loadShareList();
+      }));
+    } catch (e) {
+      host.innerHTML = `<div class="hint">${esc(e.message || e)}</div>`;
+    }
+  }
+
+  if ($('#shareBtn')) {
+    $('#shareBtn').addEventListener('click', openShareModal);
+    $('#shareClose')?.addEventListener('click', closeShareModal);
+    $('#shareDone')?.addEventListener('click', closeShareModal);
+    $('#shareBackdrop')?.addEventListener('click', closeShareModal);
+
+    $('#shareCreate')?.addEventListener('click', async () => {
+      try {
+        const r = await API.createShare(24, '');
+        const url = location.origin + r.path;
+        $('#shareUrl').value = url;
+        $('#shareMeta').textContent = '24 小时后自动失效。对方打开后只能转换和下载自己的结果。';
+        try {
+          await navigator.clipboard.writeText(url);
+          toast('链接已生成并复制到剪贴板');
+        } catch {
+          toast('链接已生成，手动复制输入框里的地址');
+        }
+        loadShareList();
+      } catch (e) {
+        toast('生成失败：' + (e.message || e), 'fail');
+      }
+    });
+
+    $('#shareCopy')?.addEventListener('click', async () => {
+      const v = $('#shareUrl').value;
+      if (!v) return toast('先点「生成新链接」', 'warn');
+      try { await navigator.clipboard.writeText(v); toast('已复制'); }
+      catch { $('#shareUrl').select(); toast('请手动复制'); }
+    });
+  }
 
   /* ================= 启动 ================= */
   (async () => {
