@@ -85,7 +85,11 @@ def main() -> int:
         fail("健康检查一直没过")
 
     # ② 上传（用中文 + 空格 + 多点，覆盖 P1-1 的坑）
-    display = "冒烟 测试 v1.2.3.txt"
+    # 名字带随机后缀：同一个数据目录连跑两次时，输出的 .pdf 已存在会走
+    # 「重名避让」变成 xxx_1.pdf —— 那是对的行为，但硬断言文件名会把它判失败。
+    # CI 每次是新容器看不出来，在生产上一跑就露。
+    uniq = uuid.uuid4().hex[:6]
+    display = f"冒烟 测试 {uniq}.txt"
     payload = "冒烟测试内容 SMOKE-MARKER-42\n".encode("utf-8")
     body, ctype = _multipart("files", display, payload)
     st, raw, _ = _req(base + "/api/upload", body, {"Content-Type": ctype}, "POST")
@@ -126,8 +130,10 @@ def main() -> int:
     # ⑤ 输出名必须是原始书名，不能是随机 file_id
     import os
     out_name = os.path.basename(out_path)
-    if out_name != "冒烟 测试 v1.2.3.pdf":
-        fail(f"输出文件名不对：{out_name!r}，应为 '冒烟 测试 v1.2.3.pdf'")
+    expect = f"冒烟 测试 {uniq}.pdf"
+    if out_name != expect:
+        fail(f"输出文件名不对：{out_name!r}，应为 {expect!r}"
+             "（如果只是多了 _1 后缀，说明是重名避让而不是命名 bug）")
     ok(f"输出名正确：{out_name}")
 
     # ⑥ 下载并校验内容
