@@ -1203,6 +1203,14 @@
     $('#tokenInput').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
   }
 
+  /* ================= PWA ================= */
+  // 只为了「添加到主屏」和静态资源提速，不做离线转换（没网本来也转不了）。
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    });
+  }
+
   /* ================= 启动 ================= */
   // ⚠️ 先切页面，再拉数据。
   // 早先 navigate() 排在几个 await 后面，浏览器会先渲染 HTML 里默认的
