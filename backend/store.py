@@ -59,12 +59,23 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 # ── 设置 ──────────────────────────────────────────────────────────────────
 
-def load_settings() -> dict[str, Any]:
+def load_settings(strict: bool = False) -> dict[str, Any]:
+    """读设置。
+
+    strict=True 时，文件存在但读不出来会抛异常 —— 认证相关必须用这个模式。
+    区分两种情况很重要：
+      文件不存在  = 首次安装，用默认值（分享关闭、无令牌）是合理的
+      文件损坏    = 之前可能开着分享模式，退回默认值等于**把认证关掉了**
+    """
     if not SETTINGS_FILE.exists():
         return dict(DEFAULT_SETTINGS)
     try:
         raw = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        if not isinstance(raw, dict):
+            raise ValueError("settings.json 顶层不是对象")
+    except (json.JSONDecodeError, OSError, ValueError) as e:
+        if strict:
+            raise
         return dict(DEFAULT_SETTINGS)
     out = dict(DEFAULT_SETTINGS)
     out.update({k: v for k, v in raw.items() if k in DEFAULT_SETTINGS})

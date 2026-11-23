@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import jobs, share, store
+from . import jobs, share, store, uploads
 
 router = APIRouter(prefix="/api")
 
@@ -57,6 +57,11 @@ def cleanup_uploads(max_age: float = UPLOAD_TTL) -> dict[str, Any]:
                 freed += st.st_size
             except OSError:
                 pass
+    try:
+        from . import uploads as _u
+        _u.purge_missing()
+    except Exception:
+        pass
     return {"removed": removed, "freed": freed}
 
 
@@ -148,8 +153,15 @@ def capabilities() -> dict[str, Any]:
 
 # ── 上传 ──────────────────────────────────────────────────────────────────
 
-@router.post("/upload")
-async def upload(files: list[UploadFile]) -> dict[str, Any]:
+async def _do_upload(files: list[UploadFile], token: str = "", sid: str = "") -> dict[str, Any]:
+    """真正干活的上传实现，管理端和分享访客共用。
+
+    ⚠️ 存储名用随机 file_id，不用原始文件名 —— 两个原因：
+      ① 归属：只有服务端知道 file_id 对应谁上传的，猜不到别人的
+      ② 并发：`exists()` + `open("wb")` 之间有竞态，同名并发会互相覆盖。
+         改成 `open("xb")`（O_EXCL）一旦撞名就抛错重来，天然排他。
+    原始文件名只作为展示用，存在 uploads.json 里。
+    """
     if len(files) > MAX_FILES_UPLOAD:
         raise HTTPException(413, f"一次最多传 {MAX_FILES_UPLOAD} 个文件，这次给了 {len(files)} 个")
 
@@ -159,14 +171,27 @@ async def upload(files: list[UploadFile]) -> dict[str, Any]:
         name = Path(f.filename or "unnamed").name.replace("\x00", "")
         if not name:
             continue
-        dest = UPLOAD_DIR / name
-        n = 1
-        while dest.exists():
-            dest = UPLOAD_DIR / f"{Path(name).stem}_{n}{Path(name).suffix}"
-            n += 1
+        suffix = Path(name).suffix.lower()
+        if len(suffix) > 16:
+            suffix = ""
+        # 排他创建：拿不到就换一个 id 重试（实际几乎不会撞）
+        dest = None
+        fid = ""
+        for _ in range(5):
+            fid = uploads.new_file_id()
+            candidate = UPLOAD_DIR / f"{fid}{suffix}"
+            try:
+                fh = open(candidate, "xb")
+                dest = candidate
+                break
+            except FileExistsError:
+                continue
+        if dest is None:
+            raise HTTPException(500, "分配存储名失败，重试一次")
+
         written = 0
         try:
-            with dest.open("wb") as out:
+            with fh as out:
                 # 边写边累计检查 —— 不只看 Content-Length，客户端可以撒谎
                 while chunk := await f.read(MB):
                     written += len(chunk)
@@ -185,11 +210,20 @@ async def upload(files: list[UploadFile]) -> dict[str, Any]:
             except OSError:
                 pass
             raise
-        saved.append({"path": str(dest), "name": dest.name, "size": dest.stat().st_size})
+
+        size = dest.stat().st_size
+        uploads.register(dest, name, size, token=token, sid=sid, file_id=fid)
+        # 只回 file_id，不回服务器路径 —— 访客拿不到别人的路径就没法冒用
+        saved.append({"file_id": fid, "name": name, "size": size})
 
     if not saved:
         raise HTTPException(400, "没有收到文件")
     return {"files": saved, "total_size": total}
+
+
+@router.post("/upload")
+async def upload(files: list[UploadFile]) -> dict[str, Any]:
+    return await _do_upload(files)
 
 
 # ── 书库 ──────────────────────────────────────────────────────────────────
@@ -316,7 +350,9 @@ def scan_format(fmt: str = Query(..., description="要检查的格式，如 mobi
 # ── 转换任务 ──────────────────────────────────────────────────────────────
 
 class JobFile(BaseModel):
-    path: str
+    # 上传的文件用 file_id（服务端核对归属）；书库里的文件用 path（仅管理端）
+    file_id: str = ""
+    path: str = ""
     name: str
     size: int = 0
 
@@ -339,14 +375,24 @@ def create_job(body: JobIn) -> dict[str, Any]:
 
     cleanup_uploads()                      # 建任务时顺手清一次过期副本
     jobs.gc_old()                          # 顺手清内存里过期完成的任务
+
+    resolved: list[dict[str, Any]] = []
     for f in body.files:
+        if f.file_id:
+            rec = uploads.owns(f.file_id, "", "")
+            if not rec:
+                raise HTTPException(400, f"文件不存在或已过期：{f.name}")
+            resolved.append({"path": rec["path"], "name": rec.get("name", f.name),
+                             "size": rec.get("size", 0)})
+            continue
+        # 书库里的文件直接给路径（管理端才有这个能力）
         p = Path(f.path).expanduser()
         if not p.exists():
             raise HTTPException(400, f"文件不存在：{f.name}")
         if not p.is_file():
             raise HTTPException(400, f"不是文件：{f.name}")
-    job = jobs.submit([f.model_dump() for f in body.files],
-                      body.target.lower().lstrip("."), body.options)
+        resolved.append({"path": str(p), "name": f.name, "size": f.size})
+    job = jobs.submit(resolved, body.target.lower().lstrip("."), body.options)
     return {"job_id": job.id, "total": job.total}
 
 
@@ -390,7 +436,17 @@ def get_settings() -> dict[str, Any]:
 
 @router.put("/settings")
 def put_settings(patch: dict[str, Any]) -> dict[str, Any]:
-    return store.save_settings(patch)
+    before = bool(store.load_settings().get("share_enabled"))
+    cur = store.save_settings(patch)
+    # 走设置接口关分享，和走 /api/share/toggle 关，效果必须一致：旧链接全部作废
+    if before and not cur.get("share_enabled"):
+        n = 0
+        for it in share.list_all():
+            if share.revoke(it["token"]):
+                n += 1
+        if n:
+            print(f"[share] 设置里关闭分享模式，已撤销 {n} 条链接")
+    return cur
 
 
 # ── 缓存（上传的临时副本） ────────────────────────────────────────────────
@@ -469,6 +525,8 @@ class ShareIn(BaseModel):
 
 @router.post("/shares")
 def create_share(body: ShareIn) -> dict[str, Any]:
+    if not store.load_settings().get("share_enabled"):
+        raise HTTPException(403, "分享模式未开启，先去设置页打开")
     ttl = int(body.ttl_hours) * 3600 if body.ttl_hours else 0
     r = share.create(ttl=ttl, note=body.note)
     return {"token": r["token"], "path": f"/s/{r['token']}",
@@ -488,6 +546,14 @@ def revoke_share(token: str) -> dict[str, Any]:
 # ── 分享链接（访客端，权限只到「转换」） ──────────────────────────────────
 
 def _share_ctx(t: str) -> dict[str, Any]:
+    """校验分享上下文。
+
+    ⚠️ 必须**先看全局开关**再看 token —— 早先只看 token，
+    于是通过 /api/settings（而不是 /api/share/toggle）关掉分享模式后，
+    shares.json 里的旧 token 依然有效，链接还能继续用。实测确认过。
+    """
+    if not store.load_settings().get("share_enabled"):
+        raise HTTPException(403, "分享模式已关闭")
     entry = share.check(t)
     if not entry:
         raise HTTPException(403, "链接无效或已过期，找发链接的人重新生成")
@@ -496,10 +562,12 @@ def _share_ctx(t: str) -> dict[str, Any]:
 
 @router.post("/s/upload")
 async def share_upload(files: list[UploadFile], t: str = Query(...),
-                       sid: str = Query("")) -> dict[str, Any]:
-    """和一键上传同一个实现，只是强制走临时目录、不碰书库。"""
+                       sid: str = Query(...)) -> dict[str, Any]:
+    """分享访客上传：同样走 _do_upload，但把归属记到这条链接 + 这个会话上。"""
     _share_ctx(t)
-    return await upload(files)
+    if not sid:
+        raise HTTPException(400, "缺少会话标识")
+    return await _do_upload(files, token=t, sid=sid)
 
 
 @router.post("/s/jobs")
@@ -514,15 +582,22 @@ def share_create_job(body: JobIn, t: str = Query(...), sid: str = Query(...)) ->
     if jobs.pending_count() >= MAX_QUEUE:
         raise HTTPException(429, "现在排队的人有点多，稍后再试")
 
-    # 访客只能处理「自己刚上传到临时目录」的文件
+    # ⚠️ 访客只能处理「自己上传的」文件。
+    # 早先只检查路径在 UPLOAD_DIR 内 —— 那只能证明文件在公共上传目录里，
+    # 不能证明是这个人传的：A、B 用同一条链接时，B 知道 A 的文件名就能抢着转。
+    # 实测确认过这个漏洞（B 用 A 的路径建任务返回 200、能查进度、能下载）。
+    # 现在只认 file_id，服务端核对 token + sid 必须都属于当前访客。
+    resolved: list[dict[str, Any]] = []
     for f in body.files:
-        p = Path(f.path).expanduser()
-        try:
-            p.resolve().relative_to(UPLOAD_DIR.resolve())
-        except (ValueError, OSError):
-            raise HTTPException(403, f"只能转换自己上传的文件：{f.name}")
-        if not p.is_file():
-            raise HTTPException(400, f"文件不存在：{f.name}")
+        if not f.file_id:
+            raise HTTPException(403, f"缺少文件标识：{f.name}（分享接口不接受服务器路径）")
+        rec = uploads.owns(f.file_id, t, sid)
+        if not rec:
+            raise HTTPException(403, f"这不是你上传的文件：{f.name}")
+        if not Path(rec["path"]).is_file():
+            raise HTTPException(400, f"文件已被清理：{f.name}")
+        resolved.append({"path": rec["path"], "name": rec.get("name", f.name),
+                         "size": rec.get("size", 0)})
 
     # 强制收紧：不许删源文件、不许指定输出目录
     opts = {
@@ -534,8 +609,7 @@ def share_create_job(body: JobIn, t: str = Query(...), sid: str = Query(...)) ->
         "delete_source": False,
     }
     cleanup_uploads()
-    job = jobs.submit([f.model_dump() for f in body.files],
-                      body.target.lower().lstrip("."), opts,
+    job = jobs.submit(resolved, body.target.lower().lstrip("."), opts,
                       share_token=t, session_id=sid)
     return {"job_id": job.id, "total": job.total, "expires": entry.get("expires", 0)}
 

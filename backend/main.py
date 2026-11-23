@@ -62,35 +62,55 @@ _EXEMPT_PATH = ("/api/health", "/api/capabilities")
 #   ① 环境变量 EBOOKFORGE_ADMIN_TOKEN（部署时固定，最高优先）
 #   ② 设置页里打开「分享模式」后自动生成的那个
 # 两个都没有 = 不拦（开箱即用、纯内网自用）
+# 哨兵：配置读不出来时用它，守卫会返回 503 而不是放行
+_FAIL_CLOSED = "\x00fail-closed\x00"
+
+
 def _active_admin_token() -> str:
-    """当前生效的管理令牌，空字符串 = 不拦。
+    """当前生效的管理令牌。空字符串 = 不拦；_FAIL_CLOSED = 拒绝一切。
 
     不缓存：settings.json 只有两百多字节，读一次不到 1 毫秒；
     而加了 1 秒缓存之后，在设置页刚打开分享模式会有一秒钟「没生效」的窗口
     （实测踩过：toggle 完立刻请求还是 200）。
+
+    ⚠️ fail closed：早先「读设置出错就返回空字符串」等于把认证关掉 ——
+    settings.json 损坏时，本来开着分享模式（有令牌保护）的服务会退化成免认证。
+    实测确认过。现在区分：
+      文件不存在 → 首次安装，默认无令牌（正常）
+      文件损坏/IO 失败 → 返回哨兵，守卫拒绝所有受保护请求
     """
     env_tok = os.environ.get("EBOOKFORGE_ADMIN_TOKEN", "").strip()
     if env_tok:
-        return env_tok
+        return env_tok                   # 环境变量优先，不受设置文件影响
     try:
         from . import store
-        s = store.load_settings()
+        s = store.load_settings(strict=True)
         return str(s.get("admin_token", "")).strip() if s.get("share_enabled") else ""
-    except Exception:
-        return ""                      # 设置读不出来就别拦，别把人锁在外面
+    except Exception as e:
+        print(f"[auth] 读取 settings.json 失败，按 fail-closed 处理：{e}", file=sys.stderr)
+        return _FAIL_CLOSED
 
 
 @app.middleware("http")
 async def admin_guard(request, call_next):
-    token = _active_admin_token()
-    if not token:
-        return await call_next(request)
-
     path = request.url.path
-    # 静态资源（前端页面、图片）不拦，否则连登录框都打不开
+
+    # 豁免判断必须排在 fail-closed 前面：
+    # 否则 settings.json 一坏，/api/health 也 503，Docker 会判定容器不健康反复重启，
+    # 连「去看看出了什么事」的入口都没了。下面这些本来就不返回敏感数据。
     if not path.startswith("/api/"):
         return await call_next(request)
     if path.startswith(_EXEMPT_PREFIX) or path in _EXEMPT_PATH:
+        return await call_next(request)
+
+    token = _active_admin_token()
+    if token == _FAIL_CLOSED:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "服务配置读取失败，为安全起见暂时拒绝所有请求。"
+                               "请检查 data/settings.json 是否损坏或不可读。",
+                     "config_error": True})
+    if not token:
         return await call_next(request)
 
     tok = (request.headers.get("X-Admin-Token")
