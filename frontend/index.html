@@ -337,7 +337,9 @@
                   管理密钥 —— 开启后访问书库/记录/设置都需要它。记下来，换设备或清缓存后要重输。
                 </p>
                 <div class="path-row">
-                  <input class="input" id="shareToken" readonly style="font-family:var(--mono);font-size:12.5px">
+                  <input class="input" id="shareToken" type="password" readonly autocomplete="off"
+                         style="font-family:var(--mono);font-size:12.5px">
+                  <button class="btn-sm" id="toggleShowToken" title="显示 / 隐藏">显示</button>
                   <button class="btn-sm" id="copyShareToken">复制</button>
                 </div>
               </div>

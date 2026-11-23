@@ -1005,7 +1005,13 @@
       const box = $('#shareTokenBox');
       if (box) box.style.display = shareStatus.enabled && shareStatus.admin_token ? '' : 'none';
       const tk = $('#shareToken');
-      if (tk && shareStatus.admin_token) tk.value = shareStatus.admin_token;
+      if (tk && shareStatus.admin_token) {
+        tk.value = shareStatus.admin_token;
+        // 每次刷新回到打码状态：不该因为上次点过「显示」就一直明文摆着
+        tk.type = 'password';
+        const tg = $('#toggleShowToken');
+        if (tg) tg.textContent = '显示';
+      }
     }
     // 转换页的按钮
     const btn = $('#shareBtn');
@@ -1097,6 +1103,16 @@
     };
     $('#newToken').addEventListener('keydown', e => {
       if (e.key === 'Enter') $('#tokenSetOk').click();
+    });
+  }
+
+
+  if ($('#toggleShowToken')) {
+    $('#toggleShowToken').addEventListener('click', () => {
+      const inp = $('#shareToken');
+      const show = inp.type === 'password';
+      inp.type = show ? 'text' : 'password';
+      $('#toggleShowToken').textContent = show ? '隐藏' : '显示';
     });
   }
 
