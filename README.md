@@ -121,6 +121,9 @@ docker compose up -d --build
 镜像有两个 tag：`:latest` 跟最新一版，`:1.0.0` 这种具体版本号方便回滚。
 出问题时 `docker pull ghcr.io/fenglibo51/ebook-forge:1.0.0` 换回已知能用的。
 
+> ⚠️ `:1.0.0` 是首次发布的版本，**不含之后几轮安全整改**（上传配额、孤儿清理、
+> 嵌套包限额那一批）。想要当前行为就拉 `:latest`。
+
 **唯一要改的是书库路径。** 仓库里的 `docker-compose.yml` 就是下面这份：
 
 ```yaml
