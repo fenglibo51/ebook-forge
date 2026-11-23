@@ -1,0 +1,33 @@
+# 构建上下文里不需要的东西
+#
+# 没有这个文件时，`docker build` 会把整个项目目录（60MB）发给 daemon ——
+# 其中 .git 20MB、samples 28MB、data 里的历史记录和密钥全都白传一遍。
+# 真正要 COPY 进镜像的只有 bookforge/ backend/ frontend/ assets/ requirements.txt。
+
+.git
+.gitignore
+.github
+data
+samples
+tests
+docs
+scripts
+
+# 文档和配置（镜像里用不到）
+*.md
+docker-compose*.yml
+Dockerfile
+.dockerignore
+
+# Python 垃圾
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store
