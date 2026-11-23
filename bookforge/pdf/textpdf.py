@@ -26,6 +26,7 @@ from .fonts import TrueTypeFont
 
 # 默认字体：按顺序找，谁在就用谁
 DEFAULT_FONT_CANDIDATES = (
+    # OTF/CFF 也能用了（整字体嵌入，不子集化）
     # Docker 镜像里随包带的那份
     "/usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf",
     # 项目自带（本地开发 / 直接跑源码）
@@ -424,19 +425,25 @@ class TextPDFWriter:
         fontfile = alloc()
         tounicode = alloc()
 
-        # 字体文件（子集 TTF，FlateDecode 压一下）
+        # 字体文件（FlateDecode 压一下）
         import zlib
-        stream(fontfile, f"/Length1 {len(subset)} /Filter /FlateDecode",
-               zlib.compress(subset, 9))
+        if self.font.is_cff:
+            # CFF/OTF 走 FontFile3；/Subtype /OpenType 表示整份 OpenType 文件
+            stream(fontfile, f"/Subtype /OpenType /Length1 {len(subset)} /Filter /FlateDecode",
+                   zlib.compress(subset, 9))
+        else:
+            stream(fontfile, f"/Length1 {len(subset)} /Filter /FlateDecode",
+                   zlib.compress(subset, 9))
 
         bbox = self.font.bbox
+        file_tag = "FontFile3" if self.font.is_cff else "FontFile2"
         put(descriptor, (f"{descriptor} 0 obj\n<< /Type /FontDescriptor "
                          f"/FontName /{self.font_name} /Flags 4 "
                          f"/FontBBox [{bbox[0]} {bbox[1]} {bbox[2]} {bbox[3]}] "
                          f"/ItalicAngle 0 /Ascent {self.font.ascender} "
                          f"/Descent {self.font.descender} "
                          f"/CapHeight {int(self.font.ascender * 0.7)} /StemV 80 "
-                         f"/FontFile2 {fontfile} 0 R >>\nendobj\n").encode())
+                         f"/{file_tag} {fontfile} 0 R >>\nendobj\n").encode())
 
         # W 数组：每 8 个一组 [start [w1 w2 ...]]
         # ⚠️ 宽度必须用「该字符在原字体里的 advance」，不能用子集 GID 去查原字体 ——
@@ -449,12 +456,20 @@ class TextPDFWriter:
             chunk = used_cids[i:i + 8]
             widths = " ".join(str(min(cid_adv.get(c, 1000), 0xFFFF)) for c in chunk)
             w_parts.append(f"{chunk[0]} [{widths}]")
-        put(cidfont, (f"{cidfont} 0 obj\n<< /Type /Font /Subtype /CIDFontType2 "
+        # CFF 用 CIDFontType0（CID 直接就是 CharStrings 索引，不需要 CIDToGIDMap）
+        # TrueType 用 CIDFontType2（要 CIDToGIDMap /Identity 把 CID 映射到 glyf 编号）
+        if self.font.is_cff:
+            cid_subtype = "/CIDFontType0"
+            cid_map = ""
+        else:
+            cid_subtype = "/CIDFontType2"
+            cid_map = " /CIDToGIDMap /Identity"
+        put(cidfont, (f"{cidfont} 0 obj\n<< /Type /Font /Subtype {cid_subtype} "
                       f"/BaseFont /{self.font_name} "
                       f"/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) "
                       f"/Supplement 0 >> "
                       f"/FontDescriptor {descriptor} 0 R "
-                      f"/CIDToGIDMap /Identity /DW 1000 "
+                      f"{cid_map} /DW 1000 "
                       f"/W [{' '.join(w_parts)}] >>\nendobj\n").encode())
 
         tou = _build_tounicode({ord(c): cid for c, cid in cp2cid.items()})

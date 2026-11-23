@@ -20,8 +20,9 @@ import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# 需要的表
-_REQUIRED = ("head", "hhea", "maxp", "loca", "glyf", "hmtx", "cmap")
+# 必需的表：glyf 轮廓和 CFF 轮廓两套
+_REQUIRED_TTF = ("head", "hhea", "maxp", "loca", "glyf", "hmtx", "cmap")
+_REQUIRED_CFF = ("head", "hhea", "maxp", "CFF ", "hmtx", "cmap")
 
 
 class FontError(ValueError):
@@ -45,6 +46,7 @@ class TrueTypeFont:
     bbox: tuple[int, int, int, int] = (0, 0, 0, 0)
     loca: list[int] = field(default_factory=list)          # 字形偏移，load 时算一次
     glyf_table: bytes = b""                                # glyf 表字节，避免每次切片复制 10MB
+    is_cff: bool = False                                   # True = OTTO/CFF 轮廓，不支持子集化
 
     # ── 载入 ────────────────────────────────────────────────────────────
     @classmethod
@@ -55,15 +57,17 @@ class TrueTypeFont:
         if len(d) < 12:
             raise FontError("字体文件太小")
         ver, n = struct.unpack(">IH", d[:6])
-        if ver == 0x4F54544F:      # 'OTTO'
-            raise FontError("这是 CFF/OpenType 字体（.otf），P4 只支持 glyf 的 .ttf")
+        if ver == 0x4F54544F:      # 'OTTO' = CFF/OpenType
+            f.is_cff = True
         for i in range(n):
             off = 12 + i * 16
             tag, _csum, toff, tlen = struct.unpack(">4sIII", d[off:off + 16])
             f.tables[tag.decode("latin-1")] = (toff, tlen)
-        missing = [t for t in _REQUIRED if t not in f.tables]
+        required = _REQUIRED_CFF if f.is_cff else _REQUIRED_TTF
+        missing = [t for t in required if t not in f.tables]
         if missing:
-            raise FontError(f"字体缺表：{missing}")
+            kind = "CFF/OpenType" if f.is_cff else "TrueType"
+            raise FontError(f"{kind} 字体缺表：{missing}")
 
         head = f._table("head")
         f.units_per_em = struct.unpack(">H", head[18:20])[0]
@@ -84,8 +88,9 @@ class TrueTypeFont:
 
         f._parse_hmtx()
         f._parse_cmap()
-        f.loca = f._parse_loca()      # 只算一次：每次 glyph_data 都重算会让扫全字体变成 O(n²)
-        f.glyf_table = f._table("glyf")
+        if not f.is_cff:
+            f.loca = f._parse_loca()  # 只算一次：每次 glyph_data 都重算会让扫全字体变成 O(n²)
+            f.glyf_table = f._table("glyf")
         return f
 
     def _table(self, tag: str) -> bytes:
@@ -237,7 +242,19 @@ class TrueTypeFont:
 
         返回 (子集 TTF 字节, {字符: 子集内 GID})。
         子集内 GID 从 1 开始（0 是 .notdef），并保持 loca 的原始格式。
+
+        CFF/OTF 字体不做子集化：那要重写 Type2 charstring 和 subr 索引，
+        工作量大、收益低（省体积而已）。整份字体嵌入，mapping 直接用原 GID ——
+        PDF 侧 CIDFontType0 的 CID 就是 CharStrings 的索引，天然对齐。
         """
+        if self.is_cff:
+            mapping = {}
+            for c in chars:
+                g = self.cmap.get(ord(c))
+                if g:
+                    mapping[c] = g
+            return self.data, mapping
+
         keep = {0}
         for c in chars:
             g = self.cmap.get(ord(c))
