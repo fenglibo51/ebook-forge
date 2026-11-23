@@ -1,4 +1,9 @@
 # Web 层依赖（引擎本身零依赖，这些只有跑 HTTP 服务才需要）
-fastapi>=0.115
-uvicorn[standard]>=0.30
-python-multipart>=0.0.20
+#
+# 锁死到生产镜像里实际验证过的版本 —— 只用 >= 的话，
+# 上游发个破坏性小版本更新，重新构建就可能起不来。
+# 升级流程：改这里 → docker compose up -d --build → 跑一遍测试再提交。
+
+fastapi==0.165.0
+uvicorn==0.54.0
+python-multipart==0.0.34

@@ -20,6 +20,21 @@ SETTINGS_FILE = DATA_DIR / "settings.json"
 
 _lock = threading.Lock()
 
+
+def _atomic_write(path: Path, text: str) -> None:
+    """先写临时文件再原子替换。
+
+    直接 write_text 的话，写到一半断电/进程被杀就留下一个半截 JSON ——
+    下次读取解析失败，设置和历史全没了（代码里虽然会退回默认值，但数据确实丢了）。
+    Path.replace 在同一文件系统内是原子的。
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())        # 确保数据真的落盘再替换
+    tmp.replace(path)
+
 DEFAULT_SETTINGS: dict[str, Any] = {
     # 文字排版
     "page_size": "a5",          # a5 / a4
@@ -70,8 +85,7 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
         if cur["page_size"] not in ("a5", "a4"):
             cur["page_size"] = "a5"
         cur["render_fallback"] = bool(cur["render_fallback"])
-        SETTINGS_FILE.write_text(json.dumps(cur, ensure_ascii=False, indent=2),
-                                 encoding="utf-8")
+        _atomic_write(SETTINGS_FILE, json.dumps(cur, ensure_ascii=False, indent=2))
         return cur
 
 
@@ -106,8 +120,7 @@ def append_history(entry: dict[str, Any]) -> None:
         # 防无限增长：只留最近 5000 条
         if len(data) > 5000:
             data = data[-5000:]
-        HISTORY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1),
-                                encoding="utf-8")
+        _atomic_write(HISTORY_FILE, json.dumps(data, ensure_ascii=False, indent=1))
 
 
 def clear_history() -> int:
@@ -118,7 +131,7 @@ def clear_history() -> int:
                 n = len(json.loads(HISTORY_FILE.read_text(encoding="utf-8")))
             except (json.JSONDecodeError, OSError):
                 n = 0
-            HISTORY_FILE.write_text("[]", encoding="utf-8")
+            _atomic_write(HISTORY_FILE, "[]")
         return n
 
 

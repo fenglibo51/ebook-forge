@@ -104,12 +104,17 @@ async def admin_guard(request, call_next):
 
 
 @app.exception_handler(Exception)
-async def _unhandled(_request, exc: Exception) -> JSONResponse:
-    """别把 traceback 甩给前端，但日志里要有。"""
+async def _unhandled(request, exc: Exception) -> JSONResponse:
+    """异常详情只写日志，回给浏览器一句通用话。
+
+    原来把 `异常类名: 消息` 直接回前端 —— 文件路径、内部实现细节都可能漏出去，
+    对拿到分享链接的人来说等于免费侦察。
+    """
     import traceback
+    print(f"[500] {request.method} {request.url.path}", file=sys.stderr)
     traceback.print_exc()
     return JSONResponse(status_code=500,
-                        content={"detail": f"{exc.__class__.__name__}: {exc}"})
+                        content={"detail": "服务内部错误，详情见服务日志"})
 
 
 app.include_router(router)
