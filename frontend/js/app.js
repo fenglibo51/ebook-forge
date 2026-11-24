@@ -117,10 +117,15 @@
       $('#engineStatus').title = h.font_ok
         ? `v${h.version} · 渲染 ${h.render_dpi}dpi · 兜底${h.render_fallback ? '开' : '关'}`
         : h.font;
+      // 侧边栏底部那行小字：版本来自后端 /api/health，
+      // 后端又是构建时从 git tag 注入的 —— 界面显示什么，镜像就是什么。
+      $('#appVersion').textContent = 'v' + h.version;
+      $('#appVersion').title = 'EbookForge v' + h.version;
     } catch (e) {
       $('#engineDot').className = 'dot fail';
       $('#engineLabel').textContent = '连不上后端';
       $('#engineStatus').title = String(e.message || e);
+      $('#appVersion').textContent = 'v—';
     }
   })();
 

@@ -288,12 +288,20 @@ class VersionConsistencyTests(unittest.TestCase):
         self.assertEqual(defs, [], "convert.py 里不该再有自己的 __version__")
 
     def test_package_and_api_agree(self):
+        """包版本和 FastAPI 版本必须来自同一个地方。
+
+        `__version__` 现在是构建时注入的（Dockerfile ARG VERSION → ENV），
+        源码兜底值跟 pyproject 一致；镜像里则是 tag 本身。
+        所以这里只强制「两处一致」，不强制「等于 pyproject」。
+        """
         import bookforge
         from backend.main import app
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         pv = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.M).group(1)
-        self.assertEqual(bookforge.__version__, pv, "包版本和 pyproject 不一致")
-        self.assertEqual(app.version, pv, "FastAPI 版本和 pyproject 不一致")
+        self.assertIn(bookforge.__version__, (pv, "dev"),
+                      f"版本号既不是 pyproject 的 {pv} 也不是 dev：{bookforge.__version__}")
+        self.assertEqual(app.version, bookforge.__version__,
+                         "FastAPI 版本和包版本不一致 —— 又有人手写第二份了")
 
     def test_cli_reports_same_version(self):
         r = subprocess.run([sys.executable, "-m", "bookforge", "--version"],
@@ -303,11 +311,13 @@ class VersionConsistencyTests(unittest.TestCase):
         self.assertIn(bookforge.__version__, r.stdout)
 
     def test_readme_latest_points_at_current(self):
-        import bookforge
+        """README 里说的「当前正式版」应该等于 pyproject 的版本。"""
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        pv = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.M).group(1)
         m = re.search(r":latest\s+最新正式版（当前 ([\d.]+)）", readme)
         self.assertIsNotNone(m, "README 里找不到「最新正式版」那一行")
-        self.assertEqual(m.group(1), bookforge.__version__)
+        self.assertEqual(m.group(1), pv)
 
 
 if __name__ == "__main__":

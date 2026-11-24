@@ -8,9 +8,15 @@
 
 FROM python:3.12-slim
 
+# 版本号：构建时从 git tag 注入，不在代码里写死。
+# CI 打 tag 时传 build-args: VERSION=<tag 去掉 v>；
+# 本地 docker build 不传就是 dev —— 本地构建永远不会冒充正式版。
+ARG VERSION=dev
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    EBOOKFORGE_DATA=/data
+    EBOOKFORGE_DATA=/data \
+    EBOOKFORGE_VERSION=${VERSION}
 
 WORKDIR /app
 

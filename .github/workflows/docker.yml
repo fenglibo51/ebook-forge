@@ -99,6 +99,10 @@ jobs:
         with:
           context: .
           push: true
+          # 版本号注入：镜像里的 /api/health 和侧边栏显示的就是这个值，
+          # 不用再手改代码里的 __version__ —— 改了 tag 忘了改代码这种事不会再有。
+          build-args: |
+            VERSION=${{ steps.meta.outputs.ver }}
           # 两个 tag：具体版本方便回滚；latest 只在正式发布时给。
           # dev 构建时 steps.meta.outputs.latest 是空串，build-push-action
           # 会过滤空行，所以只推 :dev。

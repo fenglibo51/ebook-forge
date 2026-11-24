@@ -26,6 +26,8 @@ from fastapi.responses import JSONResponse                     # noqa: E402
 from fastapi.staticfiles import StaticFiles                    # noqa: E402
 from contextlib import asynccontextmanager                     # noqa: E402
 
+from bookforge import __version__                              # noqa: E402
+
 from .api import cleanup_uploads, router                       # noqa: E402
 
 FRONTEND = ROOT / "frontend"
@@ -70,7 +72,7 @@ async def lifespan(_app: FastAPI):
                 pass
 
 
-app = FastAPI(title="EbookForge", version="1.0.5", docs_url="/api/docs",
+app = FastAPI(title="EbookForge", version=__version__, docs_url="/api/docs",
               lifespan=lifespan)
 
 
