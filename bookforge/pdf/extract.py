@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from ..formats import limits
 import re
 import zlib
 from dataclasses import dataclass
@@ -137,9 +138,13 @@ def extract_images(path: str) -> list[RawImage]:
         payload = stream
         if filters == ["FlateDecode"]:
             try:
-                payload = zlib.decompress(stream)
+                # 有上限解压：超限的 LimitError 往上抛（整个文件失败），
+                # 损坏的 zlib.error 保持原来的兜底路径（P1-01）
+                payload = limits.inflate(stream, what="PDF Flate 流 ")
+            except limits.LimitError:
+                raise
             except zlib.error:
-                payload = zlib.decompressobj().decompress(stream)
+                payload = limits.inflate(stream, what="PDF Flate 流（宽松重试）")
             if d.get("Predictor", 0) >= 10:
                 payload = _unpredict(payload, _colors(d.get("ColorSpace", "")),
                                      d.get("Columns", d.get("Width", 0)),

@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import struct
 import zlib
+
+from . import limits
 from dataclasses import dataclass
 
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
@@ -183,8 +185,13 @@ def decode(data: bytes) -> tuple[bytes, PNGInfo, int]:
     if info.color_type not in _CHANNELS:
         raise PNGError(f"不认识的 PNG 色彩类型 {info.color_type}")
 
-    raw = zlib.decompress(idat_bytes(data))
     ch = _CHANNELS[info.color_type]
+    # 按 IHDR 算这张图「应该」解出多少字节：每行 1 字节滤波标记 + width×ch。
+    # 拿它当解压上限比通用限额精确得多 —— 正常图不会被误杀，
+    # 而「声明 10×10 却想解出 1GB」的炸弹当场拦住（2026-11-24 P1-01）。
+    expected = info.height * (1 + info.width * ch)
+    raw = limits.inflate(idat_bytes(data), expected,
+                         what=f"PNG 图像 {info.width}×{info.height} ")
     px = _unfilter(raw, info.width, info.height, ch)
 
     if info.color_type == 3:

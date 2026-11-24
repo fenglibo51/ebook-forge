@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from ..formats import limits
 import zlib
 
 from ..formats import png
@@ -69,7 +70,8 @@ def to_image_bytes(img: ImageObj, icc_components: int = 3) -> tuple[bytes, str]:
     while f and f[0] in ("FlateDecode", "LZWDecode", "ASCIIHexDecode", "ASCII85Decode"):
         enc = f.pop(0)
         if enc == "FlateDecode":
-            stream = zlib.decompress(stream)
+            # 有上限解压：一张图的 Flate 流超过 256MB 就不正常（P1-01）
+            stream = limits.inflate(stream, what="PDF 图片流 ")
         else:
             raise PDFReadError(f"暂不支持的传输层编码 {enc}")
 

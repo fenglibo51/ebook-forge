@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from ..formats import limits
 import re
 import zlib
 from dataclasses import dataclass, field
@@ -212,7 +213,14 @@ class PDFDocument:
             if not raw:
                 continue
             try:
-                data = zlib.decompress(raw)
+                # 有上限解压：Object Stream 是 PDF 初始化的必经路径，
+                # 这里的压缩炸弹能在打开文件那一刻就打满内存（P1-01）。
+                # 超限的 LimitError 往上抛让整个 PDF 失败；
+                # 损坏的流还是照原样跳过。
+                data = limits.inflate(raw, limits.MAX_PDF_STREAM_BYTES,
+                                      what="PDF 对象流 ")
+            except limits.LimitError:
+                raise
             except zlib.error:
                 continue
             count = dict_int(head, "N", 0)

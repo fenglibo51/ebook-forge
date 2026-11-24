@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+from ..formats import limits
 import math
 import os
 import re
@@ -380,12 +381,10 @@ class PageRenderer:
         for f in filters:
             if f == "FlateDecode":
                 try:
-                    data = zlib.decompress(data)
-                except zlib.error:
-                    try:
-                        data = zlib.decompressobj().decompress(data)
-                    except Exception:
-                        return b""
+                    data = limits.inflate(data, limits.MAX_PDF_STREAM_BYTES,
+                                          what="PDF 内容流 ")
+                except Exception:
+                    return b""      # 内容流坏了就跳过这段（原行为）
             elif f in ("DCTDecode", "JPXDecode", "CCITTFaxDecode"):
                 return b""            # 图像流，不是内容流
             else:
@@ -572,7 +571,9 @@ class PageRenderer:
                 rows = int(mr.group(1))
             data = raw
             if filters and filters[0] == "FlateDecode":
-                data = zlib.decompress(raw)
+                # 蒙版流，有上限（P1-01）
+                data = limits.inflate(raw, limits.MAX_PDF_STREAM_BYTES,
+                                      what="PDF 蒙版流 ")
             try:
                 bits = ccitt.decode_g4(data, cols, rows) if k < 0 \
                     else ccitt.decode_g3(data, cols, rows, k == 0)

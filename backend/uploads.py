@@ -389,6 +389,31 @@ class Ticket:
             if self.sid:
                 _inflight_sid[self.sid] = _inflight_sid.get(self.sid, 0) + nbytes
 
+    def commit(self, nbytes: int) -> None:
+        """一个文件已经登记进 _live 了，把它的预占从「正在写」里转出来。
+
+        不转的后果（2026-11-24 复审 P1-02，实测）：
+            一次请求传 2MB + 1MB，总额度 4MB。
+            第一个文件 register() 后：_live 记了 2MB，_inflight 还是 2MB，
+            self.written 也还是 2MB —— 同一个 2MB 被算了两次。
+            第二个文件 admit(1MB)：used = 2 + 0 + 2 = 4MB，4+1 > 4 → 413。
+            可实际上只用了 3MB。
+
+        调用时机：uploads.register() 成功之后。失败时不要调 —— 那种情况
+        文件根本没进 _live，预占该由 finish() 统一归还。
+        """
+        if self.closed or nbytes <= 0:
+            return
+        with _lock:
+            self.written = max(0, self.written - nbytes)
+            _inflight["total"] = max(0, _inflight["total"] - nbytes)
+            if self.token:
+                _inflight_token[self.token] = max(
+                    0, _inflight_token.get(self.token, 0) - nbytes)
+            if self.sid:
+                _inflight_sid[self.sid] = max(
+                    0, _inflight_sid.get(self.sid, 0) - nbytes)
+
     def finish(self) -> None:
         """成功或失败都要调 —— 把「正在写」的记账还回去。
 

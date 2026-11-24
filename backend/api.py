@@ -260,6 +260,10 @@ async def _save_loop(files: list[UploadFile], ticket: "uploads.Ticket",
             size = dest.stat().st_size
             uploads.register(dest, name, size, token=token, sid=sid, file_id=fid)
             registered = True
+            # 这个文件已经进 _live 了，把它在本 Ticket 里「正在写」的预占转出来。
+            # 不转的话同一个 size 会被算两次（_live 一次 + _inflight 一次）：
+            # 4MB 额度下传 2MB+1MB 会被误判成 5MB 而拒掉第二个文件。
+            ticket.commit(size)
         except BaseException:
             # ⚠️ 不能只 catch HTTPException：
             # 磁盘满、权限、客户端断流抛的都是 OSError/ConnectionError，
