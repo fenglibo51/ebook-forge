@@ -159,6 +159,47 @@ class LatestNeverRollsBackTests(unittest.TestCase):
         self.assertEqual(r.stdout.strip(), "1.0.10")
 
 
+class VersionSchemeTests(unittest.TestCase):
+    """版本号规则：末位最多到 12，到顶就进位。
+
+    2026-11-24 定的：1.0.12 之后下一个必须是 1.1.0，不存在 1.0.13。
+    不是技术限制，是免得版本号越滚越长（1.0.47 这种）。
+
+    这条测试会拦住「顺手把 patch 递增成 13」——CI 直接红，逼着改 minor。
+    """
+
+    MAX_PATCH = 12
+
+    def _version(self):
+        text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        return re.search(r'^version\s*=\s*"([^"]+)"', text, re.M).group(1)
+
+    def test_patch_does_not_exceed_twelve(self):
+        v = self._version()
+        parts = v.split(".")
+        self.assertEqual(len(parts), 3, f"版本号应该是 X.Y.Z，实际 {v}")
+        patch = int(parts[2])
+        self.assertLessEqual(
+            patch, self.MAX_PATCH,
+            f"版本号 {v} 的末位超过 {self.MAX_PATCH} 了 —— "
+            f"该进位成 {parts[0]}.{int(parts[1]) + 1}.0")
+
+    def test_readme_documents_the_rule(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("末位最多到", readme, "README 没写版本号规则")
+        self.assertIn("1.1.0", readme, "README 没说明到顶后进位成什么")
+
+    def test_next_version_after_1_0_12_is_1_1_0(self):
+        """当前正好在 1.0.12 的话，下一个必须 1.1.0 而不是 1.0.13。"""
+        v = self._version()
+        if v != "1.0.12":
+            self.skipTest(f"当前版本是 {v}，不在边界上")
+        parts = [int(x) for x in v.split(".")]
+        self.assertEqual(parts[2], self.MAX_PATCH)
+        self.assertEqual(f"{parts[0]}.{parts[1] + 1}.0", "1.1.0",
+                         "1.0.12 的下一个应该是 1.1.0")
+
+
 class ReadmeConsistencyTests(unittest.TestCase):
     def test_readme_matches_trigger_rule(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
