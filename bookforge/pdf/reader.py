@@ -205,6 +205,7 @@ class PDFDocument:
 
     def _expand_objstm(self) -> None:
         """PDF 1.5+ 的对象流：/Type /ObjStm，内部对象不在文件里直接出现"""
+        objstm_total = 0
         for num in list(self.objs):
             head = self.objs[num]
             if dict_name(head, "Type") != "ObjStm":
@@ -223,6 +224,15 @@ class PDFDocument:
                 raise
             except zlib.error:
                 continue
+            # 累计预算：单流都合规，加起来也可能爆。
+            # 解析出的对象字节会一直留在 self.objs 里，不是用完就释放的临时量。
+            objstm_total += len(data)
+            if objstm_total > limits.MAX_PDF_OBJSTM_TOTAL_BYTES:
+                raise limits.LimitError(
+                    f"这本 PDF 的对象流累计解出 "
+                    f"{objstm_total / (1 << 20):.0f} MB，超过上限 "
+                    f"{limits.MAX_PDF_OBJSTM_TOTAL_BYTES / (1 << 20):.0f} MB"
+                    "（BOOKFORGE_MAX_PDF_OBJSTM_TOTAL_MB 可调）")
             count = dict_int(head, "N", 0)
             first = dict_int(head, "First", 0)
             header = data[:first].split()

@@ -223,23 +223,30 @@ async def _save_loop(files: list[UploadFile], ticket: "uploads.Ticket",
         if len(suffix) > 16:
             suffix = ""
         # 排他创建：拿不到就换一个 id 重试（实际几乎不会撞）
-        dest = None
+        #
+        # ⚠️ 这段必须在下面的 try 里面。早先它在 try 外面 ——
+        # 第二个文件 open('xb') 撞上磁盘满/权限变更就抛 OSError，
+        # 异常直接跳出整个循环，前面已登记的文件既不删也不 forget，
+        # 用户收到 500 但上传目录里留着半批文件、索引里也记着额度。
+        # （2026-11-24 复审 P2，实测复现）
+        dest: Path | None = None
         fid = ""
-        for _ in range(5):
-            fid = uploads.new_file_id()
-            candidate = UPLOAD_DIR / f"{fid}{suffix}"
-            try:
-                fh = open(candidate, "xb")
-                dest = candidate
-                break
-            except FileExistsError:
-                continue
-        if dest is None:
-            raise HTTPException(500, "分配存储名失败，重试一次")
-
+        fh = None
         written = 0
         registered = False
         try:
+            for _ in range(5):
+                fid = uploads.new_file_id()
+                candidate = UPLOAD_DIR / f"{fid}{suffix}"
+                try:
+                    fh = open(candidate, "xb")
+                    dest = candidate
+                    break
+                except FileExistsError:
+                    continue
+            if dest is None:
+                raise HTTPException(500, "分配存储名失败，重试一次")
+
             with fh as out:
                 # 边写边累计检查 —— 不只看 Content-Length，客户端可以撒谎
                 while chunk := await f.read(MB):
@@ -267,7 +274,7 @@ async def _save_loop(files: list[UploadFile], ticket: "uploads.Ticket",
             # ⚠️ 不能只 catch HTTPException：
             # 磁盘满、权限、客户端断流抛的都是 OSError/ConnectionError，
             # 那些同样会留下写了一半的文件。任何异常都必须清干净。
-            if not registered:
+            if dest is not None and not registered:
                 try:
                     dest.unlink()
                 except OSError:

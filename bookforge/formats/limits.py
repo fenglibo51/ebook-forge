@@ -48,6 +48,12 @@ MAX_INFLATE_BYTES = _mb("BOOKFORGE_MAX_INFLATE_MB", 256)
 # 实测一个 8MB 的 ObjStm 炸弹在 256MB 限额下照常放行。
 MAX_PDF_STREAM_BYTES = _mb("BOOKFORGE_MAX_PDF_STREAM_MB", 32)
 
+# 同一本 PDF 里所有对象流的**累计**解压量上限。
+# 只有单流上限是不够的：一本 PDF 可以有几十个 /ObjStm，每个都合法地解出 30MB，
+# 加起来就是 GB 级，而且解析出的对象字节会一直留在 PDFDocument.objs 里。
+# 实测（2026-11-24 复审 P1）：单流 32MB 限额挡不住「6 个各 30MB」的累计。
+MAX_PDF_OBJSTM_TOTAL_BYTES = _mb("BOOKFORGE_MAX_PDF_OBJSTM_TOTAL_MB", 256)
+
 
 def inflate(data: bytes, max_bytes: int = 0, *, what: str = "压缩流") -> bytes:
     """有上限的 zlib 解压 —— 边解边数，超了立刻停。

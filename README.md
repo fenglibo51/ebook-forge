@@ -121,8 +121,8 @@ docker compose up -d --build
 镜像 tag 分三类：
 
 ```
-:latest     最新正式版（当前 1.1.3）
-:1.1.3      具体版本号（1.1.2 / 1.1.1 / 1.1.0 / 1.0.12 / 1.0.11 / ... / 1.0.0 都留着，可以回滚）
+:latest     最新正式版（当前 1.1.4）
+:1.1.4      具体版本号（1.1.3 / 1.1.2 / 1.1.1 / 1.1.0 / 1.0.12 / 1.0.11 / ... / 1.0.0 都留着，可以回滚）
 :dev        手动触发的开发构建，只推给自己用
 ```
 
@@ -156,11 +156,11 @@ docker compose up -d --build
 用白名单而不是黑名单，因为黑名单永远漏一个：早先只拦 SemVer 形式，
 实测填 `latest` 就能把正式版覆盖掉。
 
-出问题时 `docker pull ghcr.io/fenglibo51/ebook-forge:1.1.3` 换回已知能用的；
-想退更早的版本就用 `:1.1.2` 或 `:1.1.1`。
+出问题时 `docker pull ghcr.io/fenglibo51/ebook-forge:1.1.4` 换回已知能用的；
+想退更早的版本就用 `:1.1.3` 或 `:1.1.2`。
 
 > ⚠️ `:1.0.0` 是首次发布的版本，**不含之后几轮安全整改**（上传配额、孤儿清理、
-> 嵌套包限额那一批）。想要当前行为就拉 `:latest` 或 `:1.1.3`。
+> 嵌套包限额那一批）。想要当前行为就拉 `:latest` 或 `:1.1.4`。
 
 **唯一要改的是书库路径。** 仓库里的 `docker-compose.yml` 就是下面这份：
 
@@ -472,6 +472,8 @@ zlib 压缩再要一层滤波缓冲。
 单页像素      200M（管理端）/ 60M（分享访客）    BOOKFORGE_MAX_PIXELS
 单边像素      50000                            BOOKFORGE_MAX_SIDE_PX
 整本累计      2048 MB / 512 MB                 BOOKFORGE_MAX_TOTAL_RENDER_MB
+PDF 内部流     32 MB                          BOOKFORGE_MAX_PDF_STREAM_MB
+PDF 对象流累计  256 MB                         BOOKFORGE_MAX_PDF_OBJSTM_TOTAL_MB
 整本累计（分享）                                BOOKFORGE_SHARE_TOTAL_RENDER_MB
 ```
 
@@ -588,7 +590,7 @@ bookforge/          转换引擎（零依赖，可以单独 import 当库用）
   pdf/              PDF 读写、字体嵌入、排版、渲染兜底
 backend/            FastAPI 服务
 frontend/           原生 HTML / CSS / JS，无框架无构建
-tests/              385 项单元测试（含恶意压缩包、跨会话越权、PWA 契约）
+tests/              393 项单元测试（含恶意压缩包、跨会话越权、PWA 契约）
 ```
 
 ```bash
