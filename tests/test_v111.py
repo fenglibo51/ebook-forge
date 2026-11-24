@@ -163,9 +163,13 @@ class RenderMemoryHonestyTests(unittest.TestCase):
                          "旧注释把 200M 像素说成 600MB，实际峰值是 2.3GB")
 
     def test_share_limits_stricter_than_admin(self):
-        self.assertLess(pdf_render.SHARE_MAX_PIXELS, pdf_render.MAX_PIXELS,
+        # ⚠️ 读「默认值常量」，不读 MAX_PIXELS / TOTAL_RENDER_LIMIT ——
+        # 那两个会被 _run() 按任务覆写，跑过一次分享任务之后就等于 share 的值。
+        # 同形状的坑在 v1.0.10 已经踩过一次（整本预算），这里别再踩第二次。
+        from backend.jobs import _RENDER_LIMIT_ADMIN_DEFAULT, _RENDER_PX_ADMIN_DEFAULT
+        self.assertLess(pdf_render.SHARE_MAX_PIXELS, _RENDER_PX_ADMIN_DEFAULT,
                         "分享访客的单页像素预算应该更严")
-        self.assertLess(to_comic.SHARE_TOTAL_RENDER_LIMIT, to_comic.TOTAL_RENDER_LIMIT,
+        self.assertLess(to_comic.SHARE_TOTAL_RENDER_LIMIT, _RENDER_LIMIT_ADMIN_DEFAULT,
                         "分享访客的整本预算应该更严")
 
     def test_page_px_picked_by_origin(self):
@@ -186,10 +190,41 @@ class RenderMemoryHonestyTests(unittest.TestCase):
         self.assertEqual(admin_before, admin_after, "管理端单页预算被分享任务带歪了")
 
     def test_long_image_still_supported(self):
-        """真实漫画长图（3333×50000 = 166.7M 像素）不能被拒。"""
-        self.assertGreaterEqual(pdf_render.MAX_PIXELS, 166_700_000,
-                                "默认单页预算低于真实长图，会把正常用例拒掉")
+        """真实漫画长图（3333×50000 = 166.7M 像素）不能被拒。
+
+        管理端默认值要能容下；分享访客的 60M 预算放不下长图是**故意的**
+        （公网请求不该单页吃 750MB+），这点也在这里写明。
+        """
+        from backend.jobs import _RENDER_PX_ADMIN_DEFAULT
+        self.assertGreaterEqual(_RENDER_PX_ADMIN_DEFAULT, 166_700_000,
+                                "管理端默认单页预算低于真实长图，会把正常用例拒掉")
         self.assertGreaterEqual(pdf_render.MAX_SIDE_PX, 50000)
+        self.assertLess(pdf_render.SHARE_MAX_PIXELS, 166_700_000,
+                        "分享访客放不下长图是故意的 —— 如果他们也能转，说明预算没分层")
+
+    def test_run_resets_both_module_budgets_each_task(self):
+        """_run() 必须在每个任务开始时重置**两个**模块级预算。
+
+        这块已经栽过两次：
+          v1.0.10  _render_limit_for 缓存了会被覆写的 TOTAL_RENDER_LIMIT
+          本文件     测试读了会被覆写的 MAX_PIXELS
+        根因都是「模块级可变变量 + 按任务覆写」。既然改不掉这个模式
+        （改它要动 check 函数的调用链），就加个静态检查防止漏设。
+        """
+        src = (ROOT / "backend" / "jobs.py").read_text(encoding="utf-8")
+        start = src.index("def _run(")
+        body_lines = []
+        for ln in src[start:].splitlines()[1:]:
+            if ln.startswith("def "):
+                break
+            body_lines.append(ln)
+        run_body = "\n".join(body_lines)
+        self.assertIn("to_comic.TOTAL_RENDER_LIMIT = _render_limit_for(",
+                      run_body, "_run 没有重置整本渲染预算")
+        self.assertIn("pdf_render.MAX_PIXELS = _page_px_for(",
+                      run_body, "_run 没有重置单页像素预算")
+        self.assertIn("to_comic.RENDER_DPI = _safe_dpi(",
+                      run_body, "_run 没有重置 DPI")
 
     def test_a4_at_300dpi_well_under(self):
         a4_px = 2479 * 3508          # 实测 A4 @300dpi
