@@ -24,6 +24,12 @@ import _testenv                                            # noqa: E402,F401
 WF = ROOT / ".github" / "workflows" / "docker.yml"
 
 
+
+def _cur_version() -> str:
+    """从 pyproject 读当前版本 —— 别在测试里写死，发版会过期。"""
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    return re.search(r'^version\s*=\s*"([^"]+)"', text, re.M).group(1)
+
 class ReleaseTriggerTests(unittest.TestCase):
     """P2-01：latest 只认「push 事件 + 严格 SemVer tag」。
 
@@ -68,16 +74,16 @@ class ReleaseTriggerTests(unittest.TestCase):
             self.assertEqual(rel, "0", "is_release 应该是 0")
 
     def test_push_semver_tag_publishes_latest(self):
-        r, ver, latest, rel = self._run("push", "refs/tags/v1.0.12")
+        r, ver, latest, rel = self._run("push", f"refs/tags/v{_cur_version()}")
         self.assertEqual(r.returncode, 0, r.stderr[-200:])
-        self.assertEqual(ver, "1.0.12")
+        self.assertEqual(ver, _cur_version())
         self.assertEqual(latest, "ghcr.io/fenglibo51/ebook-forge:latest")
         self.assertEqual(rel, "1")
 
     def test_non_semver_tags_never_publish(self):
         """vfoo / vlatest / v1.2 这些也以 refs/tags/v 开头，但不能算正式版。"""
         for ref in ("refs/tags/vfoo", "refs/tags/vlatest", "refs/tags/v1.2",
-                    "refs/tags/v1.0", "refs/tags/v1.0.12-rc1"):
+                    "refs/tags/v1.0", "refs/tags/v1.1.0-rc1"):
             r, ver, latest, rel = self._run("push", ref)
             # 2026-11-24 起非 SemVer tag 直接拒绝（rc != 0），比「当开发构建」更硬
             if r.returncode != 0:

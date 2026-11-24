@@ -97,6 +97,27 @@ jobs:
           elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
             if [[ "${GITHUB_REF}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               TAGGED="${GITHUB_REF#refs/tags/v}"     # v1.1.0 → 1.1.0
+
+              # 版本号规则（2026-11-24 定）：末位最多到 12，到顶就进位。
+              # 光在 pyproject 里靠测试拦不够 —— tag 是 git 层的，得在发布门禁也拦一道，
+              # 否则 v1.1.13 在 tag 规则上完全合法（清单 P3 指出的）。
+              PATCH_PART="${TAGGED##*.}"
+              if [ "$PATCH_PART" -gt 12 ]; then
+                echo "::error::版本号 ${TAGGED} 的末位是 ${PATCH_PART}，超过约定的 12"
+                echo "该项目约定：末位到 12 就进位，比如 1.1.12 → 1.2.0"
+                exit 1
+              fi
+
+              # tag 和源码里的版本必须一致 —— 防「打了 tag 忘了改 pyproject」。
+              # 镜像里注入的版本来自 tag，/api/health 报的也是它；源码不一致的话
+              # 又会出现「拉下来版本号对不上」的老问题。
+              SRC_VER=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
+              if [ "$SRC_VER" != "$TAGGED" ]; then
+                echo "::error::git tag 是 ${TAGGED}，但 pyproject.toml 里写的是 ${SRC_VER}"
+                echo "两个必须一致：先把 pyproject / __init__.py / README 的版本号改好再打 tag"
+                exit 1
+              fi
+
               IS_RELEASE=1
             elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
               # push 了一个 tag 但不是 vX.Y.Z（vfoo / vlatest / v1.2）
@@ -249,26 +270,37 @@ jobs:
 
           # 只升不降：两个正式版并发/重跑时，后完成的不一定是更新的版本。
           #
-          # ⚠️ 拉取失败必须 fail closed（P2，2026-11-24 复审）：
-          # docker pull 失败有两种可能 ——「首次发布，latest 不存在」和
-          # 「网络/权限/限流故障」。早先一律当成前者继续晋升，
-          # 等于故障时版本倒退保护直接失效。现在用 manifest inspect 区分。
+          # ⚠️ fail closed 的关键：**不能用「两个命令都失败」推断「镜像不存在」**。
+          # 网络、认证、registry 故障会让 pull 和 manifest inspect 同时失败，
+          # 那时候继续晋升就等于版本倒退保护静默失效（2026-11-24 复审 P2-01）。
+          # 只有拿到「明确不存在」的证据才认作首次发布，其余一律拒绝。
           if [ -n "$LATEST" ] && [ "$VER" != "dev" ]; then
             CUR_VER=""
             if docker pull "$IMG:latest" >/dev/null 2>&1; then
               CUR_VER=$(docker image inspect "$IMG:latest" \
                 --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' 2>/dev/null || true)
-              if [ -n "$CUR_VER" ] && [ "$CUR_VER" != "dev" ] && \
+              # pull 成功了但 label 是空的 —— 这不是「空仓库」，是我们判断不了先后
+              if [ -z "$CUR_VER" ]; then
+                echo "::error::拉到了 latest 但它的 version label 是空的，无法判断版本先后"
+                echo "拒绝自动晋升，请人工确认 GHCR 上 latest 的实际情况"
+                exit 1
+              fi
+              if [ "$CUR_VER" != "dev" ] && \
                  ! [[ "$CUR_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                 echo "::error::现有 latest 的 version label 是 '$CUR_VER'，不是 SemVer —— 无法判断先后，拒绝自动晋升，请人工检查"
                 exit 1
               fi
-            elif docker manifest inspect "$IMG:latest" >/dev/null 2>&1; then
-              echo "::error::registry 上查得到 latest 的 manifest，但拉不下来 —— 网络/权限/限流故障。"
-              echo "无法比较版本先后，为了不覆盖可能更新的正式版，拒绝本次 latest 晋升"
-              exit 1
             else
-              echo "GHCR 上还没有 latest，按首次发布处理"
+              # pull 失败：再问一次 registry 到底有没有。只有明确说不存在才放行。
+              MANIFEST_ERR=$(docker manifest inspect "$IMG:latest" 2>&1) || true
+              if echo "$MANIFEST_ERR" | grep -qiE "manifest unknown|no such manifest|name unknown|manifest blob unknown"; then
+                echo "registry 明确回答 latest 不存在 → 按首次发布处理"
+              else
+                echo "::error::无法确认 GHCR 上有没有 latest（可能是网络/权限/限流故障）"
+                echo "registry 的回答：${MANIFEST_ERR:0:200}"
+                echo "为了不覆盖可能更新的正式版，拒绝本次 latest 晋升"
+                exit 1
+              fi
             fi
             if [ -n "$CUR_VER" ] && [ "$CUR_VER" != "dev" ] && [ "$CUR_VER" != "$VER" ]; then
               HIGHEST=$(printf '%s\n%s\n' "$CUR_VER" "$VER" | sort -V | tail -1)

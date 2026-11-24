@@ -40,6 +40,12 @@ def is_formal_tag(v: str) -> bool:
     return v in ("latest", "candidate") or v.startswith("candidate-")
 
 
+
+def _cur_version() -> str:
+    """从 pyproject 读当前版本 —— 别在测试里写死，发版会过期。"""
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    return re.search(r'^version\s*=\s*"([^"]+)"', text, re.M).group(1)
+
 class MetaDerivationTests(unittest.TestCase):
     """P1：版本号只能由「push + 严格 SemVer tag」产生。
 
@@ -78,7 +84,7 @@ class MetaDerivationTests(unittest.TestCase):
 
     def test_case1_dispatch_old_tag_empty_input(self):
         """手动跑 + ref=旧 tag + 空输入 → ver 不能是那个 tag。"""
-        r, ver, latest, rel = self._run("workflow_dispatch", "refs/tags/v1.0.11")
+        r, ver, latest, rel = self._run("workflow_dispatch", f"refs/tags/v{_cur_version()}")
         self.assertEqual(r.returncode, 0, r.stderr[-200:])
         self.assertFalse(is_formal_tag(ver),
                          f"ver={ver!r} 会覆盖正式版本标签 —— 这就是本轮 P1")
@@ -87,7 +93,7 @@ class MetaDerivationTests(unittest.TestCase):
         self.assertEqual(rel, "0")
 
     def test_case2_dispatch_old_tag_with_dev_tag(self):
-        r, ver, latest, rel = self._run("workflow_dispatch", "refs/tags/v1.0.11", "test-abc")
+        r, ver, latest, rel = self._run("workflow_dispatch", f"refs/tags/v{_cur_version()}", "test-abc")
         self.assertEqual(ver, "test-abc")
         self.assertFalse(is_formal_tag(ver))
         self.assertEqual(latest, "")
@@ -98,9 +104,9 @@ class MetaDerivationTests(unittest.TestCase):
         self.assertIn("dev", r.stdout + r.stderr, "拒绝信息要告诉用户能用什么")
 
     def test_case4_push_semver_tag_is_release(self):
-        r, ver, latest, rel = self._run("push", "refs/tags/v1.0.12")
+        r, ver, latest, rel = self._run("push", f"refs/tags/v{_cur_version()}")
         self.assertEqual(r.returncode, 0, r.stderr[-200:])
-        self.assertEqual(ver, "1.0.12")
+        self.assertEqual(ver, _cur_version())
         self.assertEqual(rel, "1")
         self.assertEqual(latest, "ghcr.io/fenglibo51/ebook-forge:latest")
 
@@ -114,9 +120,9 @@ class MetaDerivationTests(unittest.TestCase):
             ("refs/heads/master", "test-abc"),
             ("refs/heads/master", "sha-123456"),
             ("refs/heads/master", "pr-42"),
-            ("refs/tags/v1.0.11", ""),          # ← 这是 P1 那条路径
-            ("refs/tags/v1.0.10", ""),
-            ("refs/tags/v1.0.0", ""),
+            (f"refs/tags/v{_cur_version()}", ""),          # ← 这是 P1 那条路径
+            (f"refs/tags/v{_cur_version()}", ""),
+            (f"refs/tags/v{_cur_version()}", ""),
             ("refs/tags/vfoo", ""),
         ]
         for ref, inp in combos:
@@ -183,18 +189,18 @@ class PullFailClosedTests(unittest.TestCase):
         self.assertIn("docker manifest inspect", self.run_script,
                       "没有用 manifest inspect 区分「真的没有」和「拉不下来」")
 
-    def test_fails_closed_on_pull_failure_with_existing_manifest(self):
-        """manifest 查得到但拉不下来 → 必须拒绝，不能当首次发布。"""
-        self.assertIn("拉不下来", self.run_script)
-        # 定位 elif 分支，确认它里面确实 exit 1
-        idx = self.run_script.find("elif docker manifest inspect")
-        self.assertGreater(idx, 0, "没有 elif manifest inspect 分支")
-        branch = self.run_script[idx:idx + 400]
-        self.assertIn("exit 1", branch.split("else")[0],
-                      "manifest 存在但拉不动时应该 exit 1（fail closed）")
+    def test_fails_closed_when_cannot_confirm(self):
+        """无法确认 latest 存不存在时（网络/权限故障）必须拒绝。
+
+        v1.1.0 又收了一轮：不能靠「两个命令都失败」推断「不存在」，
+        必须拿到 registry 明确的 manifest unknown 才认作首次发布。
+        """
+        self.assertIn("无法确认", self.run_script)
+        self.assertIn("manifest unknown", self.run_script,
+                      "要按 registry 的明确回答判断，不是按退出码")
 
     def test_first_publish_still_allowed(self):
-        self.assertIn("还没有 latest", self.run_script,
+        self.assertIn("明确回答", self.run_script,
                       "真的首次发布要放行，不能一律拒绝")
 
     def test_non_semver_current_version_rejected(self):

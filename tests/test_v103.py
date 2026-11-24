@@ -30,6 +30,12 @@ from backend import jobs                                    # noqa: E402
 from backend.main import BodyLimitMiddleware, _BODY_RULES, _BODY_DEFAULT  # noqa: E402
 
 
+
+def _cur_version() -> str:
+    """从 pyproject 读当前版本 —— 别在测试里写死，发版会过期。"""
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    return re.search(r'^version\s*=\s*"([^"]+)"', text, re.M).group(1)
+
 class ShareUploadLimitTests(unittest.TestCase):
     """P1：分享上传的 body 上限要跟「实际受约束的最小额度」对齐。
 
@@ -282,10 +288,10 @@ class ManualTagGuardTests(unittest.TestCase):
             self.assertEqual(self._latest(produced), "", f"{tag} 不该推 latest")
 
     def test_git_tag_updates_latest(self):
-        r, produced = self._run("refs/tags/v1.0.4", "")
+        r, produced = self._run(f"refs/tags/v{_cur_version()}", "")
         self.assertEqual(r.returncode, 0, r.stderr[-300:])
         self.assertEqual(self._latest(produced), "ghcr.io/fenglibo51/ebook-forge:latest")
-        self.assertIn("ver=1.0.4", produced)
+        self.assertIn(f"ver={_cur_version()}", produced)
 
     def test_no_input_and_no_tag_is_dev(self):
         r, produced = self._run("refs/heads/master", "")

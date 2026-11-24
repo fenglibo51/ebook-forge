@@ -12,6 +12,7 @@ PDF 内存这块的历史：前后被审了三轮（单页像素 → 整本累�
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -27,6 +28,12 @@ from backend.jobs import _page_px_for, _render_limit_for    # noqa: E402
 from bookforge.pdf import render as pdf_render             # noqa: E402
 from bookforge.pdf import to_comic                         # noqa: E402
 
+
+
+def _cur_version() -> str:
+    """从 pyproject 读当前版本 —— 别在测试里写死，发版会过期。"""
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    return re.search(r'^version\s*=\s*"([^"]+)"', text, re.M).group(1)
 
 class MetaTagWhitelistTests(unittest.TestCase):
     """P1：手动触发必须走白名单。
@@ -89,9 +96,9 @@ class MetaTagWhitelistTests(unittest.TestCase):
             self.assertEqual(latest, "", f"tag={tag} 不该推 latest")
 
     def test_git_tag_still_publishes(self):
-        r, ver, latest, cand = self._run("refs/tags/v1.0.11", "")
+        r, ver, latest, cand = self._run(f"refs/tags/v{_cur_version()}", "")
         self.assertEqual(r.returncode, 0, r.stderr[-300:])
-        self.assertEqual(ver, "1.0.11")
+        self.assertEqual(ver, _cur_version())
         self.assertEqual(latest, "ghcr.io/fenglibo51/ebook-forge:latest")
         self.assertIn("candidate-", cand)
 
@@ -115,7 +122,7 @@ class CandidatePerRunTests(unittest.TestCase):
                   .replace("${{ github.run_attempt }}", "1"))
         f = tempfile.NamedTemporaryFile("w", suffix=".out", delete=False)
         f.close()
-        env = dict(os.environ, GITHUB_EVENT_NAME="push", GITHUB_REF="refs/tags/v1.0.11",
+        env = dict(os.environ, GITHUB_EVENT_NAME="push", GITHUB_REF=f"refs/tags/v{_cur_version()}",
                    INPUT_TAG="", GITHUB_OUTPUT=f.name,
                    IMAGE="ghcr.io/fenglibo51/ebook-forge")
         subprocess.run(["bash", "-e", "-c", script], env=env,
