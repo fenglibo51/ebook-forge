@@ -50,16 +50,22 @@ a{color:inherit;text-decoration:none}
 :root[data-theme="dark"] #sidebar.collapsed .brand-icon{display:none}
 :root[data-theme="dark"] #sidebar.collapsed .brand-icon-dark{display:block}
 
-/* 收起态：logo 居中，展开按钮挪到右上角不占位 */
-#sidebar.collapsed .sb-head{position:relative;justify-content:center;padding-left:0;padding-right:0}
+/* 收起态：logo 和展开按钮各占一行，都居中。
+   72px 宽减掉左右 padding 只剩 48px，塞不下 32px 图标 + 26px 按钮并排 ——
+   以前是把按钮绝对定位顶到 logo 右上角（right:-4 top:-4），
+   元素框和 logo 重叠 14.5×22px、26px 热区压进 logo 图片范围，
+   看着像 logo 的一部分，也不好点。改成上下两行就彻底分开。 */
+#sidebar.collapsed .sb-head{
+  flex-direction:column;justify-content:center;gap:4px;
+  padding-left:0;padding-right:0;padding-bottom:14px;
+}
 #sidebar.collapsed #toggle{
-  position:absolute;right:-4px;top:-4px;opacity:.55;
-  transform:rotate(180deg) scale(.82);transform-origin:center;
+  position:static;opacity:.55;
+  transform:rotate(180deg);transform-origin:center;
 }
 #sidebar.collapsed #toggle:hover{opacity:1}
 #toggle{width:26px;height:26px;border-radius:var(--r-sm);color:var(--ink-3);display:grid;place-items:center;flex:0 0 auto;transition:transform .2s,background var(--t)}
 #toggle:hover{background:var(--hover);color:var(--ink)}
-#sidebar.collapsed #toggle{transform:rotate(180deg)}
 nav{display:flex;flex-direction:column;gap:2px;flex:1}
 .nav-item{
   display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:var(--r-md);
