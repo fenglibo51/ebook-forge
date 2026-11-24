@@ -85,9 +85,14 @@ nav{display:flex;flex-direction:column;gap:2px;flex:1}
 #sidebar.collapsed .theme-btn{justify-content:center;padding:8px 0}
 .engine{display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:13px;color:var(--ink-3)}
 #sidebar.collapsed .engine{justify-content:center;padding:6px 0}
-/* 版本号：侧边栏最底下那行小字。收起时只留编号，别撑破 72px */
-.sb-ver{padding:2px 12px 4px;font-size:11px;line-height:1.4;color:var(--ink-3);opacity:.75;
+/* 版本号：侧边栏最底下那行小字。收起时只留编号，别撑破 72px。
+   别再叠 opacity —— 深色底上 ink-3 已经偏暗，再乘一次就成灰糊了（实测看不清）。 */
+.sb-ver{padding:2px 12px 4px;font-size:11px;line-height:1.4;color:var(--ink-3);
         font-variant-numeric:tabular-nums;letter-spacing:.02em;user-select:text}
+@media (prefers-color-scheme: dark){
+  /* 深色下提一档：ink-3(#85857F) 压在 #17171A 上对比度不够，用 ink-2(#A8A8A2) */
+  .sb-ver{color:var(--ink-2)}
+}
 #sidebar.collapsed .sb-ver{text-align:center;padding:2px 0 4px;font-size:10px}
 .dot{width:6px;height:6px;border-radius:50%;flex:0 0 6px}
 .dot.ok{background:var(--ok)}
