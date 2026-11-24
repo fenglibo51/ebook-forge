@@ -296,14 +296,33 @@ class ThemeSelectorTests(unittest.TestCase):
         self.assertIn(':root[data-theme="dark"]', variables,
                       "深色变量应该挂在 data-theme 上")
 
-    def test_version_badge_dark_rule_uses_data_theme(self):
-        self.assertIn(':root[data-theme="dark"] .sb-ver', self.css,
-                      "版本号的深色样式没跟 data-theme")
-        # 反例检查：剥掉注释，确认没有「media query 里改 .sb-ver 颜色」的真实规则
+    def test_version_badge_uses_theme_aware_variable(self):
+        """版本号颜色必须用随 data-theme 切换的变量，不能写死也不能用 media query。
+
+        历史：先叠 opacity（深色下发灰），再改成 @media(prefers-color-scheme)
+        （手动切主题不生效）。现在直接用 --ink-2 —— 这个变量本身就挂在
+        `:root[data-theme="dark"]` 上，自动跟着主题走。
+        """
         stripped = re.sub(r"/\*.*?\*/", "", self.css, flags=re.S)
-        bad = re.search(r"@media\s*\(prefers-color-scheme:\s*dark\)\s*\{[^}]*\.sb-ver", stripped)
-        self.assertIsNone(bad,
-                          "又用回 prefers-color-scheme 改 .sb-ver 颜色了 —— 手动切主题时不生效")
+        m = re.search(r"\.sb-ver\s*\{([^}]*)\}", stripped)
+        self.assertIsNotNone(m, "找不到 .sb-ver 的规则")
+        body = m.group(1)
+        self.assertIn("var(--ink-2)", body,
+                      "版本号该用 --ink-2（浅色 5.36:1、深色 7.49:1，都过 AA）")
+        self.assertNotIn("opacity", body, "又叠 opacity 了 —— 深色下会发灰")
+        # 反例：不能用 media query 单独改这个元素
+        bad = re.search(r"@media\s*\(prefers-color-scheme:\s*dark\)\s*\{[^}]*\.sb-ver",
+                        stripped)
+        self.assertIsNone(bad, "再用 media query 改 .sb-ver 了")
+
+    def test_ink2_variable_is_theme_aware(self):
+        """--ink-2 必须在深浅两套里都定义，否则换主题时颜色不会变。"""
+        variables = (ROOT / "frontend" / "css" / "variables.css").read_text(encoding="utf-8")
+        self.assertRegex(variables, r"--ink-2:\s*#[0-9A-Fa-f]{6}",
+                         "浅色主题里没有 --ink-2")
+        dark_block = variables[variables.index(':root[data-theme="dark"]'):]
+        self.assertRegex(dark_block, r"--ink-2:\s*#[0-9A-Fa-f]{6}",
+                         "深色主题里没有 --ink-2，切换时颜色不会变")
 
 
 class SmokeVersionAssertTests(unittest.TestCase):
