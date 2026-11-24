@@ -43,10 +43,17 @@ RENDER_DPI_CHOICES = (150, 200, 300)
 
 
 def _clean_render_dpi(raw: Any) -> int:
-    """校验并返回 render_dpi。不合法直接 422，别让它进任务。"""
+    """校验并返回 render_dpi。不合法直接 422，别让它进任务。
+
+    ⚠️ OverflowError 必须一起捕获：JSON 里的 `Infinity` / `-Infinity` / `1e400`
+    会被解析成 float('inf')，`int(inf)` 抛的是 OverflowError 不是 ValueError ——
+    只捕获 TypeError/ValueError 的话这几类会一路冒成 500。
+    实测（2026-11-24）：修复前 Infinity / -Infinity / 1e400 两个入口全 500，
+    NaN 走 ValueError 分支正常 422。
+    """
     try:
         v = int(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise HTTPException(
             422, f"render_dpi 只能是 {'/'.join(map(str, RENDER_DPI_CHOICES))}，"
                  f"收到的是 {raw!r}")

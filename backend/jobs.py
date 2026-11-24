@@ -48,12 +48,30 @@ RENDER_DPI_CHOICES = (150, 200, 300)
 
 
 def _safe_dpi(raw: Any) -> int:
-    """把任意输入收敛到 150/200/300，非法值一律回落到 200。"""
+    """把任意输入收敛到 150/200/300，非法值一律回落到 200。
+
+    OverflowError 也要接：`int(float('inf'))` 抛的是它，不是 ValueError。
+    JSON 里的 Infinity / 1e400 都会变 float('inf')，漏了就冒成 500。
+    """
     try:
         v = int(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 200
     return v if v in RENDER_DPI_CHOICES else 200
+
+
+# 渲染整本预算：模块级变量是可变的，跑完一个分享任务不能把管理端的值改掉，
+# 所以第一次用到时把「原始值」记下来，之后每次都从它出发。
+_RENDER_LIMIT_ADMIN: int | None = None
+
+
+def _render_limit_for(share_token: str) -> int:
+    """按任务归属返回整本渲染的累计上限（字节）。"""
+    global _RENDER_LIMIT_ADMIN
+    from bookforge.pdf import to_comic
+    if _RENDER_LIMIT_ADMIN is None:
+        _RENDER_LIMIT_ADMIN = to_comic.TOTAL_RENDER_LIMIT
+    return to_comic.SHARE_TOTAL_RENDER_LIMIT if share_token else _RENDER_LIMIT_ADMIN
 
 
 class OutputTooLarge(RuntimeError):
@@ -238,6 +256,8 @@ def _run(job: Job) -> None:
     # 渲染兜底是模块级开关，每次任务开始时同步一次
     to_comic.RENDER_FALLBACK = bool(job.options.get("render_fallback", True))
     to_comic.RENDER_DPI = _safe_dpi(job.options.get("render_dpi", 200))
+    # 整本渲染预算：分享访客给更严的限制（公网来的请求不该占掉半台机器）
+    to_comic.TOTAL_RENDER_LIMIT = _render_limit_for(job.share_token)
 
     for item in job.items:
         # 取消只跳过「还没开始」的文件。

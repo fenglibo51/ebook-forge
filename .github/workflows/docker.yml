@@ -94,7 +94,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 构建并推送
+      - name: 构建候选镜像（只推临时 candidate 标签）
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -103,12 +103,17 @@ jobs:
           # 不用再手改代码里的 __version__ —— 改了 tag 忘了改代码这种事不会再有。
           build-args: |
             VERSION=${{ steps.meta.outputs.ver }}
-          # 两个 tag：具体版本方便回滚；latest 只在正式发布时给。
-          # dev 构建时 steps.meta.outputs.latest 是空串，build-push-action
-          # 会过滤空行，所以只推 :dev。
+          # ⚠️ 这里**只推 candidate 一个临时标签**，不碰正式版本号和 latest。
+          #
+          # 早先是 push: true 直接推 `${{ver}}` 和 `latest`，然后才拉回来起容器验证。
+          # 问题：冒烟一旦失败，GHCR 上的 latest 已经被换成坏镜像了 ——
+          # 工作流标红是事后通知，用户那边可能已经拉走了。
+          #
+          # 现在：推 candidate → 拉回来跑真实容器和端到端冒烟 → 全过之后才
+          # `docker tag` + `docker push` 晋升成正式标签。tag 是本地改指针，
+          # 推上去的 digest 和刚才验证的那个完全一致，不存在「验 A 发 B」。
           tags: |
-            ${{ env.IMAGE }}:${{ steps.meta.outputs.ver }}
-            ${{ steps.meta.outputs.latest }}
+            ${{ env.IMAGE }}:candidate
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.meta.outputs.ver }}
@@ -116,10 +121,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: 从仓库拉回刚推的镜像
+      - name: 从仓库拉回候选镜像
         run: |
           set -e
-          IMG="${{ env.IMAGE }}:${{ steps.meta.outputs.ver }}"
+          IMG="${{ env.IMAGE }}:candidate"
           # ⚠️ build-push-action 用的是 docker-container driver，构建结果在 builder
           # 自己的存储里，**不会**自动落到本机 Docker Engine。干净 runner 上直接
           # `docker image inspect` 会找不到 tag，后面 docker run 也没镜像可跑。
@@ -131,7 +136,7 @@ jobs:
       - name: 确认镜像就是这次提交构建的
         run: |
           set -e
-          IMG="${{ env.IMAGE }}:${{ steps.meta.outputs.ver }}"
+          IMG="${{ env.IMAGE }}:candidate"
           REV=$(docker image inspect "$IMG" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
           echo "镜像 revision = $REV"
           echo "本次提交      = ${{ github.sha }}"
@@ -142,12 +147,12 @@ jobs:
           docker run -d --name smoke -p 8506:8506 \
             -e EBOOKFORGE_DATA=/data \
             -e EBOOKFORGE_BOOK_DIR=/data/Book \
-            "${{ env.IMAGE }}:${{ steps.meta.outputs.ver }}"
+            "${{ env.IMAGE }}:candidate"
 
       - name: 镜像里该有的东西都在
         run: |
           set -e
-          IMG="${{ env.IMAGE }}:${{ steps.meta.outputs.ver }}"
+          IMG="${{ env.IMAGE }}:candidate"
           # ⚠️ 字体装在 /usr/share/fonts/truetype/noto/，不是 /app/assets/fonts/
           # （Dockerfile 是 COPY 过去的，源码目录不留在镜像里）。早先这里写错路径，
           # 镜像明明有字体也会被判失败。
@@ -167,6 +172,40 @@ jobs:
           # 手动 dev 构建时 steps.meta.outputs.ver 是 dev，镜像里也是 dev，同样对得上。
           python3 .github/smoke_test.py --base http://127.0.0.1:8506 \
             --expected-version "${{ steps.meta.outputs.ver }}"
+
+      # ── 这里是分界线：上面全绿，才允许把 candidate 晋升成正式标签 ──
+      #
+      # 顺序为什么重要：早先直接 push 正式标签再验证，冒烟一失败 GHCR 上的
+      # latest 已经是坏镜像了。现在 candidate 是唯一的出口，只有走到这一步
+      # 才会动正式标签。docker tag 是本地改指针，push 上去的 digest 和
+      # 刚才拉回、起容器、跑过冒烟的那个 candidate 完全一致。
+      - name: 验证通过，晋升正式标签
+        run: |
+          set -e
+          IMG="${{ env.IMAGE }}"
+          SRC="$IMG:candidate"
+          VER="${{ steps.meta.outputs.ver }}"
+          LATEST="${{ steps.meta.outputs.latest }}"
+
+          echo "验证通过的镜像："
+          docker image inspect "$SRC" --format '  ID={{.Id}}'
+
+          docker tag "$SRC" "$IMG:$VER"
+          docker push "$IMG:$VER"
+          echo "✓ 已发布 $IMG:$VER"
+
+          if [ -n "$LATEST" ]; then
+            docker tag "$SRC" "$IMG:latest"
+            docker push "$IMG:latest"
+            echo "✓ 已发布 $IMG:latest"
+          else
+            echo "（非正式 tag 触发，不动 latest）"
+          fi
+
+          echo "最终确认：正式标签与本提交一致"
+          REV=$(docker image inspect "$IMG:$VER" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
+          [ "$REV" = "${{ github.sha }}" ] || { echo "✗ 晋升后的镜像 revision 不对"; exit 1; }
+          echo "  revision = $REV"
 
       - name: 失败时导出容器日志
         if: failure()

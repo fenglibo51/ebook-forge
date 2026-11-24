@@ -35,20 +35,47 @@ if RENDER_DPI not in (150, 200, 300):
 RENDER_FALLBACK = os.environ.get("BOOKFORGE_RENDER_FALLBACK", "true").strip().lower() \
     not in ("0", "false", "no", "off")
 
+# 整本渲染的累计上限（默认 2 GB）。
+#
+# 和 render.py 的 MAX_PIXELS 分工不同：
+#   MAX_PIXELS        挡「单页别太大」（防异常 MediaBox 一页就要 600MB）
+#   TOTAL_RENDER_LIMIT 挡「几百页加起来别爆」
+#
+# 为什么需要后者：_render_pages() 把所有页的 PNG 字节都塞进 pages 列表，
+# 直到整本转完才释放。一本 500 页的扫描件，每页 3MB PNG 就是 1.5GB 常驻 ——
+# 单页每张都合规，加起来照样能把 2GB 的 NAS 打死。
+#
+# 由 backend/jobs.py 在任务开始时按「管理端 / 分享访客」分别覆写。
+TOTAL_RENDER_LIMIT = int(os.environ.get("BOOKFORGE_MAX_TOTAL_RENDER_MB", "2048")) << 20
+# 分享访客默认更严：他们的请求来自公网，不该单次占掉半台机器的内存
+SHARE_TOTAL_RENDER_LIMIT = int(
+    os.environ.get("BOOKFORGE_SHARE_TOTAL_RENDER_MB", "512")) << 20
+
 
 class PDFComicError(ValueError):
     pass
 
 
 def _render_pages(doc: PDFDocument, out_pages: int, dpi: int) -> list[Page]:
-    """逐页渲染成 PNG。有损，但这是蒙版/损坏 PDF 唯一的出图办法。"""
+    """逐页渲染成 PNG。有损，但这是蒙版/损坏 PDF 唯一的出图办法。
+
+    边渲边累计内存：等整本跑完再检查就晚了 —— 那时候几百 MB 已经吃进去了。
+    """
     from .render import render_page_to_png
+    from ..formats import png as pngmod
 
     scale = dpi / 72.0
     pages: list[Page] = []
+    total = 0
     for i in range(out_pages):
         data = render_page_to_png(doc, i, scale=scale)
-        from ..formats import png as pngmod
+        total += len(data)
+        if total > TOTAL_RENDER_LIMIT:
+            raise PDFComicError(
+                f"渲染到第 {i + 1} 页时累计图量 {total / (1 << 20):.0f} MB，"
+                f"超过上限 {TOTAL_RENDER_LIMIT / (1 << 20):.0f} MB。"
+                "这本 PDF 页数太多或页面太大，不适合走渲染兜底"
+                "（可用 BOOKFORGE_MAX_TOTAL_RENDER_MB 调整）")
         w, h, _ = pngmod.image_size(data)
         pages.append(Page(data=data, fmt="png", width=w, height=h,
                           name=f"{i + 1:05d}"))
