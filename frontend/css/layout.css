@@ -131,11 +131,21 @@ h1{font-size:37px;font-weight:700;letter-spacing:-.02em;line-height:1.25;margin-
      不用桌面的 collapsed 那套 —— 它是「收窄到 72px」，在手机上被压到 0，
      按钮跟着跑到 x=-26，点不到，等于永久锁死（2026-11-24 实测复现）。 */
   #sidebar{
-    position:fixed;left:0;top:0;height:100vh;z-index:60;
+    position:fixed;left:0;top:0;bottom:0;z-index:60;
+    /* 高度不写 100vh：移动端的 vh 指的是「地址栏收起来时」的高度，
+       地址栏一露头，底部那 60~80px 就被裁掉 —— 正好是绿灯和版本号那一行。
+       top:0 + bottom:0 让高度直接贴住可视区上下边，地址栏显隐跟着变，
+       而且所有浏览器都支持（dvh 只有较新的才认）。height:auto 是覆盖基础样式里的 100vh。 */
+    height:auto;
     width:var(--sb-w);flex-basis:var(--sb-w);
     transform:translateX(-100%);transition:transform .22s ease;
     box-shadow:0 0 0 1px var(--line);
+    /* iPhone 底部小黑条别压住版本号 */
+    padding-bottom:calc(18px + env(safe-area-inset-bottom, 0px));
   }
+  /* 菜单多了就在这块里滚，footer 永远贴在底部可见 */
+  nav{min-height:0;overflow-y:auto}
+  .sb-foot{flex-shrink:0}
   #sidebar.mobile-open{transform:translateX(0);box-shadow:0 10px 40px rgba(0,0,0,.22)}
 
   /* 桌面遗留的 collapsed 在手机上强制失效，抽屉里永远是完整菜单 */
