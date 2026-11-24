@@ -51,8 +51,9 @@ class MetaTagWhitelistTests(unittest.TestCase):
     def _run(self, ref: str, input_tag: str):
         f = tempfile.NamedTemporaryFile("w", suffix=".out", delete=False)
         f.close()
-        env = dict(os.environ, GITHUB_REF=ref, INPUT_TAG=input_tag,
-                   GITHUB_OUTPUT=f.name, IMAGE="ghcr.io/fenglibo51/ebook-forge")
+        env = dict(os.environ, GITHUB_EVENT_NAME="push", GITHUB_REF=ref,
+                   INPUT_TAG=input_tag, GITHUB_OUTPUT=f.name,
+                   IMAGE="ghcr.io/fenglibo51/ebook-forge")
         r = subprocess.run(["bash", "-e", "-c", self.script], env=env,
                            capture_output=True, text=True)
         out = Path(f.name).read_text(encoding="utf-8")
@@ -112,8 +113,9 @@ class CandidatePerRunTests(unittest.TestCase):
                   .replace("${{ github.run_attempt }}", "1"))
         f = tempfile.NamedTemporaryFile("w", suffix=".out", delete=False)
         f.close()
-        env = dict(os.environ, GITHUB_REF="refs/tags/v1.0.11", INPUT_TAG="",
-                   GITHUB_OUTPUT=f.name, IMAGE="ghcr.io/fenglibo51/ebook-forge")
+        env = dict(os.environ, GITHUB_EVENT_NAME="push", GITHUB_REF="refs/tags/v1.0.11",
+                   INPUT_TAG="", GITHUB_OUTPUT=f.name,
+                   IMAGE="ghcr.io/fenglibo51/ebook-forge")
         subprocess.run(["bash", "-e", "-c", script], env=env,
                        capture_output=True, text=True)
         out = Path(f.name).read_text(encoding="utf-8")
@@ -139,10 +141,14 @@ class CandidatePerRunTests(unittest.TestCase):
                 self.assertNotIn('IMG="${{ env.IMAGE }}:candidate"', bare)
 
     def test_promote_step_rechecks_trigger_source(self):
-        """晋升那步要再确认一次 GITHUB_REF，不能只靠 tag 名字。"""
+        """晋升那步要再确认一次，不能只靠 tag 名字。
+
+        2026-11-24 起判断依据是 is_release（push 事件 + 严格 SemVer），
+        不再直接比 GITHUB_REF —— workflow_dispatch 也能把 ref 设成 tag。
+        """
         promote = next(s for s in self.steps if "晋升" in s.get("name", ""))
-        self.assertIn("refs/tags/v*", promote["run"],
-                      "晋升步骤没有二次确认触发来源")
+        self.assertIn("is_release", promote["run"],
+                      "晋升步骤没有二次确认 is_release")
 
 
 class RenderMemoryHonestyTests(unittest.TestCase):

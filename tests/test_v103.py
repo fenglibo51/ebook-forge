@@ -235,6 +235,7 @@ class ManualTagGuardTests(unittest.TestCase):
         out_file.close()
         env = dict(os.environ)
         env.update({
+            "GITHUB_EVENT_NAME": "push",     # latest 现在要 push 事件才认
             "GITHUB_REF": ref,
             "INPUT_TAG": input_tag,
             "GITHUB_OUTPUT": out_file.name,

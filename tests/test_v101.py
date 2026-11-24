@@ -312,8 +312,12 @@ class LatestTagTests(unittest.TestCase):
 
     def test_latest_gated_on_git_tag_not_on_name(self):
         """判断依据必须是 GITHUB_REF，不是标签名等于什么。"""
-        self.assertIn('[[ "${GITHUB_REF}" == refs/tags/v* ]]', self.yml,
-                      "latest 应该由「是不是正式 tag 触发」决定")
+        # 2026-11-24：授权条件从「只看 GITHUB_REF」收紧到
+        # 「push 事件 + 严格 SemVer tag」。断言跟着改。
+        self.assertIn("GITHUB_EVENT_NAME", self.yml,
+                      "latest 的授权条件必须包含事件类型 —— "
+                      "workflow_dispatch 也能把 ref 设成 tag")
+        self.assertIn("IS_RELEASE", self.yml, "应该有 is_release 这个统一判断")
         # 反例：按名字判断的写法不能再回来
         self.assertNotIn('if [ "$TAGGED" = "dev" ]', self.yml,
                          "又回到按标签名判断了 —— 手动输入 test123 会漏过去")

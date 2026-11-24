@@ -16,6 +16,15 @@ permissions:
   contents: read
   packages: write          # 这一行是关键：没有它 GITHUB_TOKEN 推不了 ghcr
 
+# 发布串行化：同一时间只跑一个发布工作流，别让两个版本互相抢标签。
+# cancel-in-progress: false —— 已经在跑的发布不能被后来的取消，
+# 否则可能出现「candidate 推了、验证到一半被砍、正式标签没晋升」。
+# 串行本身不保证版本顺序（先排队的可能后跑完），所以晋升步骤里还有
+# 一道「只升不降」的版本比较，两者缺一不可。
+concurrency:
+  group: publish-${{ github.repository }}
+  cancel-in-progress: false
+
 env:
   REGISTRY: ghcr.io
   IMAGE: ghcr.io/${{ github.repository }}
@@ -81,15 +90,33 @@ jobs:
             TAGGED="dev"
           fi
           echo "ver=${TAGGED}" >> "$GITHUB_OUTPUT"
-          # latest 只跟「正式 git tag」走，不看标签名叫什么。
-          # 早先的判断是 TAGGED != "dev" —— 手动输入 test123 这种照样会
-          # 更新 latest。现在只看触发来源：只有 push refs/tags/v* 才算正式发布。
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+          # ── 什么情况才允许更新 latest ──
+          #
+          # 必须同时满足两个条件，缺一不可：
+          #   ① 事件是 push（真的推了 tag）
+          #   ② ref 严格匹配 refs/tags/v<N>.<N>.<N>
+          #
+          # 为什么不能只看 GITHUB_REF：GitHub 允许 workflow_dispatch **指定 tag 作为 ref**。
+          # 手动跑一次、ref 填 v1.0.10，GITHUB_REF 就是 refs/tags/v1.0.10，
+          # 只看 ref 的话会把旧版本重新晋升成 latest —— 实测确认过（2026-11-24）。
+          #
+          # 为什么要严格匹配 SemVer：`vfoo`、`vlatest` 这种也以 refs/tags/v 开头。
+          IS_RELEASE=0
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && \
+             [[ "${GITHUB_REF}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            IS_RELEASE=1
+          fi
+          echo "is_release=${IS_RELEASE}" >> "$GITHUB_OUTPUT"
+
+          if [ "$IS_RELEASE" = "1" ]; then
             echo "latest=${IMAGE}:latest" >> "$GITHUB_OUTPUT"
             echo "将要推送：${IMAGE}:${TAGGED} 和 :latest（正式发布）"
           else
             echo "latest=" >> "$GITHUB_OUTPUT"
             echo "将要推送：${IMAGE}:${TAGGED}（不动 latest）"
+            if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+              echo "（ref 虽然是 tag 但不是 push 事件或不是 vX.Y.Z，不按正式发布处理）"
+            fi
           fi
           # 候选标签绑定到本次运行 —— 并发发布不会互相覆盖。
           # 用固定 :candidate 的话，运行 A 推完、B 也推 candidate（改写指针），
@@ -198,12 +225,32 @@ jobs:
           SRC="${{ steps.meta.outputs.candidate }}"
           VER="${{ steps.meta.outputs.ver }}"
           LATEST="${{ steps.meta.outputs.latest }}"
+          IS_RELEASE="${{ steps.meta.outputs.is_release }}"
 
-          # 双保险：即使前面哪道判断被绕过，这里也再确认一次 ——
-          # 只有正式 git tag 触发才允许推 latest。
-          if [ -n "$LATEST" ] && [[ "${GITHUB_REF}" != refs/tags/v* ]]; then
-            echo "::error::非 refs/tags/v* 触发却要推 latest，拒绝（GITHUB_REF=${GITHUB_REF}）"
+          # 双保险：只有「push 事件 + 严格 SemVer tag」才允许推 latest。
+          # 不看 GITHUB_REF 单独判断 —— workflow_dispatch 也能把 ref 设成 tag。
+          if [ -n "$LATEST" ] && [ "$IS_RELEASE" != "1" ]; then
+            echo "::error::is_release=$IS_RELEASE 却要推 latest，拒绝"
             exit 1
+          fi
+
+          # 只升不降：两个正式版并发/重跑时，后完成的不一定是更新的版本。
+          # 先看 GHCR 上现在的 latest 是什么版本，比本次低就跳过晋升。
+          if [ -n "$LATEST" ] && [ "$VER" != "dev" ]; then
+            CUR_VER=""
+            if docker pull "$IMG:latest" >/dev/null 2>&1; then
+              CUR_VER=$(docker image inspect "$IMG:latest" \
+                --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' 2>/dev/null || true)
+            fi
+            if [ -n "$CUR_VER" ] && [ "$CUR_VER" != "dev" ] && [ "$CUR_VER" != "$VER" ]; then
+              HIGHEST=$(printf '%s\n%s\n' "$CUR_VER" "$VER" | sort -V | tail -1)
+              if [ "$HIGHEST" != "$VER" ]; then
+                echo "本次 $VER 低于 GHCR 上现有的 latest（$CUR_VER），跳过 latest 晋升，防止版本回退"
+                LATEST=""
+              else
+                echo "本次 $VER 高于现有的 latest（$CUR_VER），继续晋升"
+              fi
+            fi
           fi
 
           echo "验证通过的镜像："
