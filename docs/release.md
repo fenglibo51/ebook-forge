@@ -25,7 +25,7 @@ README 里的当前版本。镜像里的版本号由 `build-arg VERSION` 注入�
 
 ```
 :latest     最新正式版
-:1.1.4      具体版本号，方便回滚
+:1.1.5      具体版本号，方便回滚
 :dev        手动触发的开发构建
 ```
 
@@ -74,5 +74,5 @@ CI 绿 → 打 tag → push tag → 发布工作流自动跑
 docker compose up -d --build
 
 # 部署正式版
-EBOOKFORGE_VERSION=1.1.4 docker compose up -d --build
+EBOOKFORGE_VERSION=1.1.5 docker compose up -d --build
 ```
