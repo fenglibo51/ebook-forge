@@ -101,7 +101,7 @@
                 从服务器选择
               </button>
             </div>
-            <p class="drop-hint">EPUB · MOBI · AZW3 · PDF · TXT · DOCX · FB2 · CBZ · CBR · CB7 · CBC</p>
+            <p class="drop-hint">EPUB · MOBI · PDF · TXT · DOCX · FB2 · CBZ · CB7 · CBC</p>
             <input type="file" id="file-input" multiple hidden>
           </div>
           <div class="file-list" id="file-list"></div>
@@ -299,7 +299,7 @@
                 <button class="btn-sm" id="checkFont">检测</button>
               </div>
               <span class="found" id="fontState"></span>
-              <p class="hint">只支持 TrueType（.ttf）。CFF/OTF 会报错。字体按书里用到的字做子集化嵌入。</p>
+              <p class="hint">支持 .ttf 和 .otf。.ttf 只嵌书里用到的字，体积小；.otf 不裁剪，整份嵌进去。</p>
             </div>
           </div>
         </div>

@@ -5,11 +5,11 @@
 
   **电子书 / 漫画格式转换，引擎是我自己写的**
 
-  不装 Calibre，不装 poppler，不装 unar —— 镜像 172 MB（Calibre 方案要 1.5 GB）
+  不装 Calibre，不装 poppler，不装 unar —— 镜像 160 MB（Calibre 方案要 1.5 GB）
 
   [![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
   ![外部依赖](https://img.shields.io/badge/外部依赖-0-brightgreen)
-  ![镜像](https://img.shields.io/badge/镜像-172MB-informational)
+  ![镜像](https://img.shields.io/badge/镜像-160MB-informational)
   [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 </div>
 
@@ -23,7 +23,7 @@
 
 市面上的方案基本都套 Calibre，一个 1.5 GB 的庞然大物，还要拉 poppler、unar、p7zip 一堆外部程序。
 
-这个项目的转换部分是从零写的 —— 解 PDF、读 EPUB、拆 MOBI、拼 ZIP，全是 Python 标准库。**没有任何外部二进制**，镜像 172 MB，起容器到能转书大概 3 秒。
+这个项目的转换部分是从零写的 —— 解 PDF、读 EPUB、拆 MOBI、拼 ZIP，全是 Python 标准库。**没有任何外部二进制**，镜像 160 MB，拉取只要 53 MB，起容器到能转书大概 3 秒。
 
 ### 🖼️ 图片转完还是原样
 
@@ -322,6 +322,20 @@ print('已关闭分享模式')
 ```
 
 内存小的机器可以把 `BOOKFORGE_MAX_PIXELS` 调下来（比如 `60000000`，峰值降到约 750 MB）。
+
+**整本转换吃多少内存**（实测，CBZ→PDF，800×800 随机噪声 PNG，接近不可压缩）：
+
+```
+页数    输入     输出     峰值 RSS   比基线多   增量/输入
+──────────────────────────────────────────────────────────
+10     18 MB   18 MB     102 MB      72 MB      3.9x
+30     55 MB   55 MB     274 MB     172 MB      3.1x
+50     92 MB   92 MB     423 MB     148 MB      1.6x
+```
+
+增量不是严格线性 —— 10 页到 50 页输入涨 5 倍，增量只涨 2 倍，所以别用「输入 × 固定倍数」估。这些数字是估算参考不是保证：`bytes()` 拷贝、`bytearray` 扩容、zlib 缓冲、分配器碎片都会让真实值偏离。要硬保证就给容器设 `deploy.resources.limits.memory`，让它 OOM 掉。
+
+转换是**单线程串行**的，不会出现「同时转十本内存叠加」，真正吃内存的只有正在跑的那一本。
 
 ---
 

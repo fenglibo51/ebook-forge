@@ -3,8 +3,9 @@
 只为了一件事：把「这本书用到的字」从 10MB 的 Noto Sans SC 里抠出来，
 做成一个几十 KB 的子集字体嵌进 PDF。不子集化的话每本书都要背 10MB。
 
-只支持 glyf 轮廓的 TrueType（.ttf）。CFF/OpenType（.otf）明确报错 ——
-CFF 子集化是另一套（Type2 charstring），不在 P4 范围。
+glyf 轮廓的 TrueType（.ttf）会做子集化：只把「这本书用到的字」抠出来嵌进 PDF。
+CFF/OpenType（.otf）能读能用，但不子集化 —— CFF 是另一套 Type2 charstring，
+这里只按整份嵌入，体积大但正确。
 
 子集化的几个要点：
 
