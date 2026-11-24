@@ -64,48 +64,52 @@ jobs:
         env:
           INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
-          if [ -n "$INPUT_TAG" ]; then
-            TAGGED="$INPUT_TAG"
-            # 手动触发只允许开发标签 —— 用**白名单**，不用黑名单。
-            #
-            # 早先是「拒绝 SemVer 形式」（^[vV]?X.Y.Z），结果 latest / candidate /
-            # prod / LATEST 全都能绕过去。实测（2026-11-24）：
-            #   填 latest → ver=latest → 晋升步骤 docker tag ... :latest → 覆盖正式 latest
-            #   填 candidate → 覆盖候选标签，干扰正在跑的发布
-            # 黑名单永远漏一个，白名单只放行明确安全的。
-            case "$TAGGED" in
-              dev|test-*|sha-*|pr-*) ;;
-              latest|candidate)
-                echo "::error::'${TAGGED}' 是发布流程内部保留的标签，手动触发不能用"
-                exit 1 ;;
-              *)
-                echo "::error::手动触发只能用 dev / test-* / sha-* / pr-* 这类开发标签，收到 '${TAGGED}'"
-                echo "正式发布请打 git tag：git tag v1.0.11 && git push origin v1.0.11"
-                exit 1 ;;
-            esac
-          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            TAGGED="${GITHUB_REF#refs/tags/}"
-            TAGGED="${TAGGED#v}"          # v1.0.0 → 1.0.0
+          # ── 版本号从哪来，完全按事件类型决定 ──
+          #
+          # 血泪史（三轮）：
+          #   v1.0.10  只有黑名单拦 SemVer   → 填 latest 照样覆盖正式版
+          #   v1.0.11  latest 改成看 ref      → workflow_dispatch 能把 ref 设成旧 tag
+          #   v1.0.12  加了 push + SemVer 判断 → latest 挡住了，但 ver 仍然从 ref 派生，
+          #            晋升步骤无条件 docker push "$IMG:$VER" → 覆盖历史版本标签
+          #
+          # 根子上的教训：**手动触发永远不要从 GITHUB_REF 派生版本号**。
+          # GitHub 允许 workflow_dispatch 指定 tag 作为 ref，手动跑一次、ref 填
+          # v1.0.11、输入框留空，就能拿到 ver=1.0.11 —— 实测确认过。
+          IS_RELEASE=0
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ -z "$INPUT_TAG" ]; then
+              # 手动触发不填标签 = 开发构建。不看 ref，哪怕它是个 tag。
+              TAGGED="dev"
+            else
+              TAGGED="$INPUT_TAG"
+              # 白名单：只放行开发标签
+              case "$TAGGED" in
+                dev|test-*|sha-*|pr-*) ;;
+                latest|candidate)
+                  echo "::error::'${TAGGED}' 是发布流程内部保留的标签，手动触发不能用"
+                  exit 1 ;;
+                *)
+                  echo "::error::手动触发只能用 dev / test-* / sha-* / pr-*，收到 '${TAGGED}'"
+                  echo "正式发布请打 git tag：git tag v1.1.0 && git push origin v1.1.0"
+                  exit 1 ;;
+              esac
+            fi
+          elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            if [[ "${GITHUB_REF}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              TAGGED="${GITHUB_REF#refs/tags/v}"     # v1.1.0 → 1.1.0
+              IS_RELEASE=1
+            elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+              # push 了一个 tag 但不是 vX.Y.Z（vfoo / vlatest / v1.2）
+              echo "::error::tag '${GITHUB_REF#refs/tags/}' 不是 vX.Y.Z 格式，不发布"
+              echo "正式发布请用：git tag v1.1.0 && git push origin v1.1.0"
+              exit 1
+            else
+              TAGGED="dev"                            # 推 master
+            fi
           else
-            TAGGED="dev"
+            TAGGED="dev"                              # 其它事件一律当开发构建
           fi
           echo "ver=${TAGGED}" >> "$GITHUB_OUTPUT"
-          # ── 什么情况才允许更新 latest ──
-          #
-          # 必须同时满足两个条件，缺一不可：
-          #   ① 事件是 push（真的推了 tag）
-          #   ② ref 严格匹配 refs/tags/v<N>.<N>.<N>
-          #
-          # 为什么不能只看 GITHUB_REF：GitHub 允许 workflow_dispatch **指定 tag 作为 ref**。
-          # 手动跑一次、ref 填 v1.0.10，GITHUB_REF 就是 refs/tags/v1.0.10，
-          # 只看 ref 的话会把旧版本重新晋升成 latest —— 实测确认过（2026-11-24）。
-          #
-          # 为什么要严格匹配 SemVer：`vfoo`、`vlatest` 这种也以 refs/tags/v 开头。
-          IS_RELEASE=0
-          if [ "${GITHUB_EVENT_NAME}" = "push" ] && \
-             [[ "${GITHUB_REF}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            IS_RELEASE=1
-          fi
           echo "is_release=${IS_RELEASE}" >> "$GITHUB_OUTPUT"
 
           if [ "$IS_RELEASE" = "1" ]; then
@@ -114,9 +118,6 @@ jobs:
           else
             echo "latest=" >> "$GITHUB_OUTPUT"
             echo "将要推送：${IMAGE}:${TAGGED}（不动 latest）"
-            if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-              echo "（ref 虽然是 tag 但不是 push 事件或不是 vX.Y.Z，不按正式发布处理）"
-            fi
           fi
           # 候选标签绑定到本次运行 —— 并发发布不会互相覆盖。
           # 用固定 :candidate 的话，运行 A 推完、B 也推 candidate（改写指针），
@@ -227,20 +228,47 @@ jobs:
           LATEST="${{ steps.meta.outputs.latest }}"
           IS_RELEASE="${{ steps.meta.outputs.is_release }}"
 
-          # 双保险：只有「push 事件 + 严格 SemVer tag」才允许推 latest。
-          # 不看 GITHUB_REF 单独判断 —— workflow_dispatch 也能把 ref 设成 tag。
+          # 二次校验（P1，2026-11-24 复审）：非正式发布时 VER 必须过开发标签白名单。
+          #
+          # 上一版只挡住了「推 latest」，但晋升步骤是无条件
+          # `docker tag "$SRC" "$IMG:$VER"; docker push "$IMG:$VER"` ——
+          # 手动跑、ref 填旧 tag v1.0.11、输入框留空，ver 就是 1.0.11，
+          # latest 挡住了，正式版本号照推，把历史镜像覆盖掉。实测确认过。
+          if [ "$IS_RELEASE" != "1" ]; then
+            case "$VER" in
+              dev|test-*|sha-*|pr-*) ;;
+              *)
+                echo "::error::非正式发布却要推 '$VER' 这个标签，拒绝（会覆盖正式版/保留标签）"
+                exit 1 ;;
+            esac
+          fi
           if [ -n "$LATEST" ] && [ "$IS_RELEASE" != "1" ]; then
             echo "::error::is_release=$IS_RELEASE 却要推 latest，拒绝"
             exit 1
           fi
 
           # 只升不降：两个正式版并发/重跑时，后完成的不一定是更新的版本。
-          # 先看 GHCR 上现在的 latest 是什么版本，比本次低就跳过晋升。
+          #
+          # ⚠️ 拉取失败必须 fail closed（P2，2026-11-24 复审）：
+          # docker pull 失败有两种可能 ——「首次发布，latest 不存在」和
+          # 「网络/权限/限流故障」。早先一律当成前者继续晋升，
+          # 等于故障时版本倒退保护直接失效。现在用 manifest inspect 区分。
           if [ -n "$LATEST" ] && [ "$VER" != "dev" ]; then
             CUR_VER=""
             if docker pull "$IMG:latest" >/dev/null 2>&1; then
               CUR_VER=$(docker image inspect "$IMG:latest" \
                 --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' 2>/dev/null || true)
+              if [ -n "$CUR_VER" ] && [ "$CUR_VER" != "dev" ] && \
+                 ! [[ "$CUR_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "::error::现有 latest 的 version label 是 '$CUR_VER'，不是 SemVer —— 无法判断先后，拒绝自动晋升，请人工检查"
+                exit 1
+              fi
+            elif docker manifest inspect "$IMG:latest" >/dev/null 2>&1; then
+              echo "::error::registry 上查得到 latest 的 manifest，但拉不下来 —— 网络/权限/限流故障。"
+              echo "无法比较版本先后，为了不覆盖可能更新的正式版，拒绝本次 latest 晋升"
+              exit 1
+            else
+              echo "GHCR 上还没有 latest，按首次发布处理"
             fi
             if [ -n "$CUR_VER" ] && [ "$CUR_VER" != "dev" ] && [ "$CUR_VER" != "$VER" ]; then
               HIGHEST=$(printf '%s\n%s\n' "$CUR_VER" "$VER" | sort -V | tail -1)

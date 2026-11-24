@@ -51,7 +51,9 @@ class MetaTagWhitelistTests(unittest.TestCase):
     def _run(self, ref: str, input_tag: str):
         f = tempfile.NamedTemporaryFile("w", suffix=".out", delete=False)
         f.close()
-        env = dict(os.environ, GITHUB_EVENT_NAME="push", GITHUB_REF=ref,
+        env = dict(os.environ,
+                   GITHUB_EVENT_NAME=("push" if ref.startswith("refs/tags/") else "workflow_dispatch"),
+                   GITHUB_REF=ref,
                    INPUT_TAG=input_tag, GITHUB_OUTPUT=f.name,
                    IMAGE="ghcr.io/fenglibo51/ebook-forge")
         r = subprocess.run(["bash", "-e", "-c", self.script], env=env,

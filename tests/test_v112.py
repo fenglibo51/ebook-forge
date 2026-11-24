@@ -79,6 +79,10 @@ class ReleaseTriggerTests(unittest.TestCase):
         for ref in ("refs/tags/vfoo", "refs/tags/vlatest", "refs/tags/v1.2",
                     "refs/tags/v1.0", "refs/tags/v1.0.12-rc1"):
             r, ver, latest, rel = self._run("push", ref)
+            # 2026-11-24 起非 SemVer tag 直接拒绝（rc != 0），比「当开发构建」更硬
+            if r.returncode != 0:
+                self.assertIn("不是 vX.Y.Z", r.stdout + r.stderr)
+                continue
             self.assertEqual(latest, "", f"{ref} 不该推 latest")
             self.assertEqual(rel, "0", f"{ref} 的 is_release 应该是 0")
 

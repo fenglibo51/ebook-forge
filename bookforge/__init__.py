@@ -12,4 +12,4 @@ __all__ = ["convert", "read_comic", "ConvertError"]
 #   ② 源码兜底值 —— 直接从源码跑（python -m bookforge）时用，和 pyproject 一致。
 #
 # 本地 docker build 不传 build-arg → 得到 "dev"，永远不会冒充正式版。
-__version__ = os.environ.get("EBOOKFORGE_VERSION") or "1.0.12"
+__version__ = os.environ.get("EBOOKFORGE_VERSION") or "1.1.0"
