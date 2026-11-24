@@ -79,21 +79,55 @@
 
   /* ================= 侧边栏 ================= */
   const sb = $('#sidebar'), tg = $('#toggle'), SB_KEY = 'ebookforge:sidebar-collapsed';
+  const mask = $('#sbMask'), burger = $('#hamburger');
+  const isMobile = () => window.matchMedia('(max-width: 760px)').matches;
+
   const applyCollapsed = (v) => {
+    // 手机上不用桌面那套「收窄到 72px」：抽屉靠 .mobile-open 控制显隐。
+    // 之前手机上宽度被压到 0，按钮跟着跑到屏幕外（x=-26），点不回来。
+    if (isMobile()) {
+      sb.classList.remove('collapsed');
+      tg.title = '收起侧边栏';
+      return;
+    }
     sb.classList.toggle('collapsed', v);
     tg.title = v ? '展开侧边栏' : '收起侧边栏';
   };
+
+  const openDrawer = () => {
+    sb.classList.add('mobile-open');
+    mask.classList.add('show');
+    document.body.classList.add('sb-lock');
+  };
+  const closeDrawer = () => {
+    sb.classList.remove('mobile-open');
+    mask.classList.remove('show');
+    document.body.classList.remove('sb-lock');
+  };
+
   applyCollapsed(localStorage.getItem(SB_KEY) === '1');
+
   tg.addEventListener('click', () => {
+    if (isMobile()) { closeDrawer(); return; }    // 抽屉里那个箭头 = 关抽屉
     const next = !sb.classList.contains('collapsed');
     applyCollapsed(next);
     localStorage.setItem(SB_KEY, next ? '1' : '0');
+  });
+
+  burger.addEventListener('click', openDrawer);
+  mask.addEventListener('click', closeDrawer);
+  window.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
+  // 桌面 ↔ 手机切换时收拾干净：放大回桌面要恢复 localStorage 里的收窄状态
+  window.addEventListener('resize', () => {
+    if (!isMobile()) closeDrawer();
+    applyCollapsed(localStorage.getItem(SB_KEY) === '1');
   });
 
   /* ================= 页面切换 ================= */
   const navItems = $$('.nav-item'), pages = $$('.page');
   let currentPage = '';
   function navigate(id) {
+    if (isMobile()) closeDrawer();        // 手机上点导航项直接关抽屉，别挡着内容
     if (!document.getElementById('page-' + id)) id = 'convert';
     if (id === currentPage) return;
     currentPage = id;

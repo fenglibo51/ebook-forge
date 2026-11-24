@@ -30,7 +30,7 @@
         <img src="/img/logo-icon.png" class="brand-icon" alt="EbookForge">
         <img src="/img/logo-icon-dark.png" class="brand-icon-dark" alt="EbookForge">
       </div>
-      <button id="toggle" title="收起侧边栏">
+      <button id="toggle" title="收起侧边栏" aria-label="收起侧边栏">
         <svg viewBox="0 0 24 24" width="16" height="16"><path d="M15 6l-6 6 6 6"/></svg>
       </button>
     </div>
@@ -67,7 +67,13 @@
     </div>
   </aside>
 
+  <!-- 手机上侧边栏是抽屉：这块是背后那层遮罩，点它关抽屉 -->
+  <div id="sbMask" class="sb-mask" aria-hidden="true"></div>
+
   <main>
+    <button id="hamburger" class="hamburger" aria-label="打开菜单" aria-controls="sidebar">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
 
     <!-- ==================== ① 格式转换 ==================== -->
     <section id="page-convert" class="page active">
