@@ -194,10 +194,11 @@ class VersionSchemeTests(unittest.TestCase):
             f"版本号 {v} 的末位超过 {self.MAX_PATCH} 了 —— "
             f"该进位成 {parts[0]}.{int(parts[1]) + 1}.0")
 
-    def test_readme_documents_the_rule(self):
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("末位最多到", readme, "README 没写版本号规则")
-        self.assertIn("1.1.0", readme, "README 没说明到顶后进位成什么")
+    def test_release_doc_documents_the_rule(self):
+        """版本号规则在 docs/release.md —— 用户不关心这个。"""
+        doc = (ROOT / "docs" / "release.md").read_text(encoding="utf-8")
+        self.assertIn("末位最多到", doc, "发布文档没写版本号规则")
+        self.assertIn("1.1.0", doc, "没说明到顶后进位成什么")
 
     def test_next_version_after_1_0_12_is_1_1_0(self):
         """当前正好在 1.0.12 的话，下一个必须 1.1.0 而不是 1.0.13。"""
@@ -211,12 +212,16 @@ class VersionSchemeTests(unittest.TestCase):
 
 
 class ReadmeConsistencyTests(unittest.TestCase):
-    def test_readme_matches_trigger_rule(self):
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("只能填开发标签", readme)
-        # README 里描述 latest 的条件要跟代码一致
-        self.assertRegex(readme, r"正式 git tag|正式 tag|v\*",
-                         "README 没说明 latest 的触发条件")
+    def test_release_doc_matches_trigger_rule(self):
+        """发布约定写在 docs/release.md，不是用户 README。
+
+        README 是给用户看的（怎么装、怎么用）；版本规则、白名单这些
+        是维护者约定，混进去会让用户文档变成流水账。
+        """
+        doc = (ROOT / "docs" / "release.md").read_text(encoding="utf-8")
+        self.assertIn("只能填开发标签", doc)
+        self.assertRegex(doc, r"正式 git tag|refs/tags/vX",
+                         "发布文档没说明 latest 的触发条件")
 
 
 if __name__ == "__main__":

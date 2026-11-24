@@ -215,11 +215,12 @@ class ConcurrencyDocumentedTests(unittest.TestCase):
     要不要保证每个 tag 都有镜像，得波哥定。
     """
 
-    def test_readme_documents_pending_behavior(self):
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("连续推", readme,
-                      "README 应该说明「短时间内连续推多个 tag 可能跳过中间版本」")
-        self.assertIn("latest", readme)
+    def test_release_doc_documents_pending_behavior(self):
+        """连续推 tag 的行为写在 docs/release.md。"""
+        doc = (ROOT / "docs" / "release.md").read_text(encoding="utf-8")
+        self.assertIn("连续推", doc,
+                      "发布文档应该说明「短时间内连续推多个 tag 可能跳过中间版本」")
+        self.assertIn("latest", doc)
 
     def test_concurrency_config_present(self):
         wf = yaml.safe_load(WF.read_text(encoding="utf-8"))
