@@ -383,8 +383,12 @@ class PageRenderer:
                 try:
                     data = limits.inflate(data, limits.MAX_PDF_STREAM_BYTES,
                                           what="PDF 内容流 ")
+                except limits.LimitError:
+                    # 超限不能当成「内容流坏了跳过」—— 那会渲染出一页空白
+                    # 还报成功。必须让整个文件失败（2026-11-24 复审 P2-02）。
+                    raise
                 except Exception:
-                    return b""      # 内容流坏了就跳过这段（原行为）
+                    return b""      # 真的损坏才跳过这一段（原行为）
             elif f in ("DCTDecode", "JPXDecode", "CCITTFaxDecode"):
                 return b""            # 图像流，不是内容流
             else:

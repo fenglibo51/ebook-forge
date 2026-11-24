@@ -130,7 +130,8 @@ def new_file_id() -> str:
 
 
 def register(path: Path, display_name: str, size: int, *,
-             token: str = "", sid: str = "", file_id: str = "") -> str:
+             token: str = "", sid: str = "", file_id: str = "",
+             ticket: "Ticket | None" = None) -> str:
     """登记一次上传，返回 file_id。
 
     管理端上传 token/sid 为空；分享访客上传会记下它属于哪条链接、哪个会话。
@@ -154,6 +155,11 @@ def register(path: Path, display_name: str, size: int, *,
         data[fid] = rec
         _save(data)
         _live_bump(rec, +1)
+        # 同一个锁段里把本次上传对这个文件的预占退掉 —— 分两个锁段会有
+        # 一个极短窗口，别的线程这时 admit() 会同时看到新的 _live 和旧的
+        # _inflight，短暂重复计数误拒 413（2026-11-24 P3-01）。
+        if ticket is not None:
+            ticket._commit_locked(size)
     return fid
 
 
@@ -405,14 +411,26 @@ class Ticket:
         if self.closed or nbytes <= 0:
             return
         with _lock:
-            self.written = max(0, self.written - nbytes)
-            _inflight["total"] = max(0, _inflight["total"] - nbytes)
-            if self.token:
-                _inflight_token[self.token] = max(
-                    0, _inflight_token.get(self.token, 0) - nbytes)
-            if self.sid:
-                _inflight_sid[self.sid] = max(
-                    0, _inflight_sid.get(self.sid, 0) - nbytes)
+            self._commit_locked(nbytes)
+
+    def _commit_locked(self, nbytes: int) -> None:
+        """commit 的无锁版本，给 register() 在同一个锁段里连着调。
+
+        为什么要这个：register() 进 _live 和 commit() 退出 _inflight 原来是
+        两个独立的锁段，中间有个极短的窗口 —— 别的线程这时候 admit() 会同时
+        看到「新的 _live」和「还没退的 _inflight」，短暂重复计数导致误拒 413。
+        （2026-11-24 复审 P3-01，概率很低但顺手能收）
+        """
+        if nbytes <= 0:
+            return
+        self.written = max(0, self.written - nbytes)
+        _inflight["total"] = max(0, _inflight["total"] - nbytes)
+        if self.token:
+            _inflight_token[self.token] = max(
+                0, _inflight_token.get(self.token, 0) - nbytes)
+        if self.sid:
+            _inflight_sid[self.sid] = max(
+                0, _inflight_sid.get(self.sid, 0) - nbytes)
 
     def finish(self) -> None:
         """成功或失败都要调 —— 把「正在写」的记账还回去。

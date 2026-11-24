@@ -79,6 +79,13 @@ def inflate(data: bytes, max_bytes: int = 0, *, what: str = "压缩流") -> byte
         raise LimitError(
             f"{what}解压后超过 {_fmt_bytes(max_bytes)} 上限"
             "（可能是压缩炸弹；对应限额可用环境变量调整）")
+    # ⚠️ decompressobj **不保证输入完整**：流尾部被截断（正文或 Adler32 校验码少了
+    # 几个字节）时，它照样返回一段 bytes，只是 d.eof 为 False。
+    # 原来的 zlib.decompress() 对这种情况抛 Error -5，调用方的「损坏文件」分支
+    # 就是靠它工作的。这里用同样的异常保持兼容 —— 别让截断流被当合法数据。
+    # （2026-11-24 复审 P2-01：实测裁掉末尾 1/2/6 字节后，旧实现返回正常 bytes）
+    if not d.eof:
+        raise zlib.error("压缩流被截断：没有解到 zlib 流末尾")
     return out
 
 

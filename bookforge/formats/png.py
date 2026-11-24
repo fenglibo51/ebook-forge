@@ -187,9 +187,21 @@ def decode(data: bytes) -> tuple[bytes, PNGInfo, int]:
 
     ch = _CHANNELS[info.color_type]
     # 按 IHDR 算这张图「应该」解出多少字节：每行 1 字节滤波标记 + width×ch。
-    # 拿它当解压上限比通用限额精确得多 —— 正常图不会被误杀，
-    # 而「声明 10×10 却想解出 1GB」的炸弹当场拦住（2026-11-24 P1-01）。
+    #
+    # ⚠️ 但这个 expected 来自**上传文件自己声明的 IHDR**，完全不可信。
+    # 拿它直接当 inflate 的上限，等于让文件自己给自己定预算 ——
+    # 实测（2026-11-24 复审 P1-01）：全局限额压到 1MB 时，
+    # 一个 26KB 的 PNG（声称 3000×3000）照样解出 25.7MB。
+    # 所以先在 expected 上再卡一道全局预算，然后才解压。
+    if info.width <= 0 or info.height <= 0:
+        raise PNGError(f"PNG 尺寸非法：{info.width}×{info.height}")
     expected = info.height * (1 + info.width * ch)
+    if expected > limits.MAX_INFLATE_BYTES:
+        raise limits.LimitError(
+            f"PNG 声称 {info.width}×{info.height}，要解出 "
+            f"{expected / (1 << 20):.0f} MB，超过上限 "
+            f"{limits.MAX_INFLATE_BYTES / (1 << 20):.0f} MB"
+            "（BOOKFORGE_MAX_INFLATE_MB 可调）")
     raw = limits.inflate(idat_bytes(data), expected,
                          what=f"PNG 图像 {info.width}×{info.height} ")
     px = _unfilter(raw, info.width, info.height, ch)

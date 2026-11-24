@@ -258,12 +258,11 @@ async def _save_loop(files: list[UploadFile], ticket: "uploads.Ticket",
                         raise HTTPException(413, str(e)) from e
                     out.write(chunk)
             size = dest.stat().st_size
-            uploads.register(dest, name, size, token=token, sid=sid, file_id=fid)
+            # ticket 一起传进去：登记和「退还本次预占」在同一个锁段完成。
+            # 分两步做会有一个极短窗口让别的线程重复计数（P3-01）。
+            uploads.register(dest, name, size, token=token, sid=sid, file_id=fid,
+                             ticket=ticket)
             registered = True
-            # 这个文件已经进 _live 了，把它在本 Ticket 里「正在写」的预占转出来。
-            # 不转的话同一个 size 会被算两次（_live 一次 + _inflight 一次）：
-            # 4MB 额度下传 2MB+1MB 会被误判成 5MB 而拒掉第二个文件。
-            ticket.commit(size)
         except BaseException:
             # ⚠️ 不能只 catch HTTPException：
             # 磁盘满、权限、客户端断流抛的都是 OSError/ConnectionError，
