@@ -60,18 +60,22 @@ def _safe_dpi(raw: Any) -> int:
     return v if v in RENDER_DPI_CHOICES else 200
 
 
-# 渲染整本预算：模块级变量是可变的，跑完一个分享任务不能把管理端的值改掉，
-# 所以第一次用到时把「原始值」记下来，之后每次都从它出发。
-_RENDER_LIMIT_ADMIN: int | None = None
+# 渲染整本预算：按任务归属给不同值。
+#
+# ⚠️ 管理端的默认值必须从**环境变量**直接算，不能从 to_comic.TOTAL_RENDER_LIMIT 读 ——
+# 那个模块级变量会被 _run() 按任务覆写（跑分享任务时改成 512MB）。
+# 早先就是在 `_render_limit_for` 里第一次调用时缓存 it，结果：
+#   跑过一次分享任务 → TOTAL_RENDER_LIMIT 变 512MB → 被缓存成「管理端默认值」
+#   → 之后所有管理端任务都只有 512MB 预算，而且再也不会恢复。
+# CI 抓到的就是这条（536870912 not less than 536870912）。
+_RENDER_LIMIT_ADMIN_DEFAULT = int(
+    os.environ.get("BOOKFORGE_MAX_TOTAL_RENDER_MB", "2048")) << 20
 
 
 def _render_limit_for(share_token: str) -> int:
     """按任务归属返回整本渲染的累计上限（字节）。"""
-    global _RENDER_LIMIT_ADMIN
     from bookforge.pdf import to_comic
-    if _RENDER_LIMIT_ADMIN is None:
-        _RENDER_LIMIT_ADMIN = to_comic.TOTAL_RENDER_LIMIT
-    return to_comic.SHARE_TOTAL_RENDER_LIMIT if share_token else _RENDER_LIMIT_ADMIN
+    return to_comic.SHARE_TOTAL_RENDER_LIMIT if share_token else _RENDER_LIMIT_ADMIN_DEFAULT
 
 
 class OutputTooLarge(RuntimeError):

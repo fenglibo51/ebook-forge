@@ -126,10 +126,13 @@ class TotalRenderBudgetTests(unittest.TestCase):
         to_comic.TOTAL_RENDER_LIMIT = self._saved
 
     def test_constants_exist_and_sane(self):
-        self.assertGreater(to_comic.TOTAL_RENDER_LIMIT, 0)
+        from backend.jobs import _RENDER_LIMIT_ADMIN_DEFAULT
+        self.assertGreater(_RENDER_LIMIT_ADMIN_DEFAULT, 0)
         self.assertGreater(to_comic.SHARE_TOTAL_RENDER_LIMIT, 0)
+        # 比较「默认值」，不能拿 to_comic.TOTAL_RENDER_LIMIT —— 那个会被 _run()
+        # 按任务覆写，跑过一次分享任务之后就等于 SHARE 的值了（CI 就是这么红的）
         self.assertLess(to_comic.SHARE_TOTAL_RENDER_LIMIT,
-                        to_comic.TOTAL_RENDER_LIMIT,
+                        _RENDER_LIMIT_ADMIN_DEFAULT,
                         "分享访客的整本预算应该比管理端严")
 
     def test_render_stops_when_total_exceeds(self):
@@ -170,13 +173,27 @@ class TotalRenderBudgetTests(unittest.TestCase):
         self.assertGreater(admin, share, "管理端预算不该被分享任务改小")
 
     def test_share_task_does_not_poison_admin_budget(self):
-        """先跑一次分享任务，再取管理端预算 —— 不能拿到被改小的值。"""
+        """跑一次分享任务后，管理端预算不能被永久改小。
+
+        这就是 CI 抓到的真 bug：早先把 to_comic.TOTAL_RENDER_LIMIT 缓存成
+        「管理端默认值」，而它会被 _run() 按任务覆写成 512MB ——
+        跑过一次分享任务，之后所有管理端任务都只有 512MB 预算。
+        """
         from backend import jobs
-        jobs._RENDER_LIMIT_ADMIN = None          # 重置缓存
+        from bookforge.pdf import to_comic as tc
+
         admin_before = _render_limit_for("")
-        _render_limit_for("some-share-token")
-        admin_after = _render_limit_for("")
-        self.assertEqual(admin_before, admin_after)
+        # 模拟 _run() 跑了一个分享任务：模块变量被改成 share 的值
+        saved = tc.TOTAL_RENDER_LIMIT
+        try:
+            tc.TOTAL_RENDER_LIMIT = _render_limit_for("tok-x")
+            admin_after = _render_limit_for("")
+        finally:
+            tc.TOTAL_RENDER_LIMIT = saved
+
+        self.assertEqual(admin_before, admin_after,
+                         "管理端预算被分享任务带歪了")
+        self.assertGreater(admin_after, _render_limit_for("tok-x"))
 
 
 class PublishOrderTests(unittest.TestCase):
