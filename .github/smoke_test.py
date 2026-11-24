@@ -68,21 +68,40 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:8506")
     ap.add_argument("--keep", action="store_true", help="失败时保留上传文件方便排查")
+    # 发布流程必须传这个：镜像 tag 和 /api/health 报的版本不一致时当场判失败。
+    # 早先只是把健康检查的 JSON 打出来，人眼看着「version 1.0.7」就当过了 ——
+    # 但没人会真去比对，版本号错位一样能发出去。
+    ap.add_argument("--expected-version", default="",
+                    help="期望的版本号（正式发布传 tag 去掉 v；不传则不校验）")
     args = ap.parse_args()
     base = args.base.rstrip("/")
+    want_version = args.expected_version.strip()
 
     # ① 健康
+    health = {}
     for _ in range(30):
         try:
             st, body, _ = _req(base + "/api/health")
             if st == 200:
                 ok(f"健康检查 {body.decode()[:80]}")
+                try:
+                    health = json.loads(body)
+                except ValueError:
+                    health = {}
                 break
         except (urllib.error.URLError, OSError):
             pass
         time.sleep(2)
     else:
         fail("健康检查一直没过")
+
+    # ①b 版本号硬断言。发布流程传 --expected-version，对不上直接失败。
+    if want_version:
+        got = str(health.get("version", ""))
+        if got != want_version:
+            fail(f"镜像版本号不对：/api/health 报 {got!r}，期望 {want_version!r}"
+                 f"（镜像 tag 和代码里的版本不一致 —— 检查 build-arg VERSION 是否传进去）")
+        ok(f"版本号核对通过：{got}")
 
     # ② 上传（用中文 + 空格 + 多点，覆盖 P1-1 的坑）
     # 名字带随机后缀：同一个数据目录连跑两次时，输出的 .pdf 已存在会走

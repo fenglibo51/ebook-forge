@@ -41,8 +41,36 @@ def output_limit_mb(share_token: str = "") -> int:
     return SHARE_OUTPUT_MB if share_token else MAX_OUTPUT_MB
 
 
+# 渲染 DPI 白名单。API 层已经校验并返回 422，这里是兜底 ——
+# jobs 也可能被 CLI / 测试直接调用，不经过 API 那道闸。
+# to_comic 模块初始化时的白名单只在 import 时跑一次，挡不住运行时赋值。
+RENDER_DPI_CHOICES = (150, 200, 300)
+
+
+def _safe_dpi(raw: Any) -> int:
+    """把任意输入收敛到 150/200/300，非法值一律回落到 200。"""
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return 200
+    return v if v in RENDER_DPI_CHOICES else 200
+
+
 class OutputTooLarge(RuntimeError):
     """产物超过单文件上限 —— 预期内的失败，不是 bug。"""
+
+
+class QueueFull(RuntimeError):
+    """排队超额。scope 说明是哪一维度满了，api 层据此给不同提示。"""
+
+    def __init__(self, scope: str, detail: str) -> None:
+        super().__init__(detail)
+        self.scope = scope        # global / sid / token
+
+
+def _inflight(jobs: dict[str, "Job"]) -> list["Job"]:
+    """在途任务 = 排队中 + 正在跑。done/canceled 不算，否则取消过的任务会永久占额度。"""
+    return [j for j in jobs.values() if j.status in ("pending", "running")]
 
 
 @dataclass
@@ -113,11 +141,18 @@ _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="convert")
 
 def submit(files: list[dict[str, Any]], target: str,
            options: dict[str, Any], *,
-           share_token: str = "", session_id: str = "") -> Job:
+           share_token: str = "", session_id: str = "",
+           max_total: int = 0, max_sid: int = 0,
+           max_token: int = 0) -> Job:
     """files: [{path, name, size}] —— path 是服务器上的绝对路径
 
     share_token / session_id 非空 = 走分享链接进来的，任务归属记下来，
     之后查进度和下载都要核对，拿到链接的人看不到别人的东西。
+
+    max_total / max_sid / max_token：在途任务上限，0 = 不限。
+    **判断和登记在同一把锁里** —— 早先是 api 层先 pending_count() 再 submit()，
+    两个并发请求能同时看到「还有空位」，双双挤进来。现在挪到锁内做，
+    超了直接抛 QueueFull，由 api 层翻成 429。
     """
     job = Job(
         id=uuid.uuid4().hex[:12],
@@ -129,6 +164,20 @@ def submit(files: list[dict[str, Any]], target: str,
         session_id=session_id,
     )
     with _lock:
+        running = _inflight(_jobs)
+        if max_total and len(running) >= max_total:
+            raise QueueFull("global",
+                            f"排队任务已满（{len(running)}/{max_total}），等前面的跑完再提交")
+        if max_sid and session_id:
+            n = sum(1 for j in running if j.session_id == session_id)
+            if n >= max_sid:
+                raise QueueFull("sid",
+                                f"这个会话同时最多 {max_sid} 个任务，等前面的跑完再提交")
+        if max_token and share_token:
+            n = sum(1 for j in running if j.share_token == share_token)
+            if n >= max_token:
+                raise QueueFull("token",
+                                f"这条链接同时最多 {max_token} 个任务，稍后再试")
         _jobs[job.id] = job
     _executor.submit(_run, job)
     return job
@@ -188,7 +237,7 @@ def _run(job: Job) -> None:
 
     # 渲染兜底是模块级开关，每次任务开始时同步一次
     to_comic.RENDER_FALLBACK = bool(job.options.get("render_fallback", True))
-    to_comic.RENDER_DPI = int(job.options.get("render_dpi", 200))
+    to_comic.RENDER_DPI = _safe_dpi(job.options.get("render_dpi", 200))
 
     for item in job.items:
         # 取消只跳过「还没开始」的文件。
@@ -207,7 +256,7 @@ def _run(job: Job) -> None:
             try:
                 r = convert(
                     item.src, job.target, out=out_path,
-                    dpi=float(job.options.get("render_dpi", 200)),
+                    dpi=float(_safe_dpi(job.options.get("render_dpi", 200))),
                     page_size=str(job.options.get("page_size", "a5")),
                     font=str(job.options.get("font_path", "")),
                     src_name=item.name,     # 原始文件名，别让随机 file_id 变成书名

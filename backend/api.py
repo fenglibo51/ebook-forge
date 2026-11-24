@@ -29,6 +29,31 @@ MAX_FILE_MB = int(os.environ.get("EBOOKFORGE_MAX_FILE_MB", "1024"))
 MAX_FILES_UPLOAD = int(os.environ.get("EBOOKFORGE_MAX_FILES_UPLOAD", "10"))
 MAX_FILES_TASK = int(os.environ.get("EBOOKFORGE_MAX_FILES_TASK", "10"))
 MAX_QUEUE = int(os.environ.get("EBOOKFORGE_MAX_QUEUE", "10"))
+# 单会话 / 单链接的在途任务上限。只防「一个人占满全局队列」，
+# 不影响正常用户 —— 一个人同时排两个转换任务已经很少见了。
+MAX_PENDING_PER_SID = int(os.environ.get("EBOOKFORGE_MAX_PENDING_SID", "2"))
+MAX_PENDING_PER_TOKEN = int(os.environ.get("EBOOKFORGE_MAX_PENDING_TOKEN", "6"))
+
+# 渲染 DPI 只允许这三个值。前端下拉框是这三个，但 API 是公开的 ——
+# 实测传 100000 / -5 / 0 都被原样接受，任务里存的也是这些值。
+# 为什么必须在服务端卡：to_comic 模块初始化时那个白名单只在 import 时跑一次，
+# _run() 里 `to_comic.RENDER_DPI = int(...)` 会把它覆盖掉。
+# 渲染时 scale = dpi/72，100000dpi 就是 1389 倍放大，几亿像素的 bytearray 能把容器打到 OOM。
+RENDER_DPI_CHOICES = (150, 200, 300)
+
+
+def _clean_render_dpi(raw: Any) -> int:
+    """校验并返回 render_dpi。不合法直接 422，别让它进任务。"""
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            422, f"render_dpi 只能是 {'/'.join(map(str, RENDER_DPI_CHOICES))}，"
+                 f"收到的是 {raw!r}")
+    if v not in RENDER_DPI_CHOICES:
+        raise HTTPException(
+            422, f"render_dpi 只能是 {'/'.join(map(str, RENDER_DPI_CHOICES))}，收到 {v}")
+    return v
 
 # 目录筛选扫描结果缓存：{(base, fmt): (时间戳, 目录集合, 是否截断)}
 _SCAN_CACHE: dict[tuple[str, str], tuple[float, set, bool, int]] = {}
@@ -406,9 +431,6 @@ def create_job(body: JobIn) -> dict[str, Any]:
         raise HTTPException(400, "没有文件")
     if len(body.files) > MAX_FILES_TASK:
         raise HTTPException(413, f"单个任务最多 {MAX_FILES_TASK} 个文件")
-    pending = jobs.pending_count()
-    if pending >= MAX_QUEUE:
-        raise HTTPException(429, f"排队任务已满（{pending}/{MAX_QUEUE}），等前面的跑完再提交")
 
     cleanup_uploads()                      # 建任务时顺手清一次过期副本
     jobs.gc_old()                          # 顺手清内存里过期完成的任务
@@ -429,7 +451,15 @@ def create_job(body: JobIn) -> dict[str, Any]:
         if not p.is_file():
             raise HTTPException(400, f"不是文件：{f.name}")
         resolved.append({"path": str(p), "name": f.name, "size": f.size})
-    job = jobs.submit(resolved, body.target.lower().lstrip("."), body.options)
+    # 管理端也是走 API 的，options 里的 render_dpi 一样要校验 ——
+    # 「自己人不会乱传」不是理由，脚本/前端 bug 一样能把 dpi 传成 100000。
+    opts = dict(body.options)
+    opts["render_dpi"] = _clean_render_dpi(opts.get("render_dpi", 200))
+    try:
+        job = jobs.submit(resolved, body.target.lower().lstrip("."), opts,
+                          max_total=MAX_QUEUE)
+    except jobs.QueueFull as e:
+        raise HTTPException(429, str(e))
     return {"job_id": job.id, "total": job.total}
 
 
@@ -622,8 +652,6 @@ def share_create_job(body: JobIn, t: str = Query(...), sid: str = Query(...)) ->
         raise HTTPException(400, "没有文件")
     if len(body.files) > MAX_FILES_TASK:
         raise HTTPException(413, f"单个任务最多 {MAX_FILES_TASK} 个文件")
-    if jobs.pending_count() >= MAX_QUEUE:
-        raise HTTPException(429, "现在排队的人有点多，稍后再试")
 
     # ⚠️ 访客只能处理「自己上传的」文件。
     # 早先只检查路径在 UPLOAD_DIR 内 —— 那只能证明文件在公共上传目录里，
@@ -645,15 +673,22 @@ def share_create_job(body: JobIn, t: str = Query(...), sid: str = Query(...)) ->
     # 强制收紧：不许删源文件、不许指定输出目录
     opts = {
         "page_size": str(body.options.get("page_size", "a5")),
-        "render_dpi": int(body.options.get("render_dpi", 200)),
+        "render_dpi": _clean_render_dpi(body.options.get("render_dpi", 200)),
         "render_fallback": bool(body.options.get("render_fallback", True)),
         "font_path": "",
         "output_dir": "",
         "delete_source": False,
     }
     cleanup_uploads()
-    job = jobs.submit(resolved, body.target.lower().lstrip("."), opts,
-                      share_token=t, session_id=sid)
+    try:
+        job = jobs.submit(resolved, body.target.lower().lstrip("."), opts,
+                          share_token=t, session_id=sid,
+                          max_total=MAX_QUEUE,
+                          max_sid=MAX_PENDING_PER_SID,
+                          max_token=MAX_PENDING_PER_TOKEN)
+    except jobs.QueueFull as e:
+        # 全局满了和「你自己排太多」要分开说，不然访客不知道是自己占的
+        raise HTTPException(429, str(e))
     return {"job_id": job.id, "total": job.total, "expires": entry.get("expires", 0)}
 
 

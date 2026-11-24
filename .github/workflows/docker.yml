@@ -160,7 +160,13 @@ jobs:
           docker run --rm --entrypoint python3 "$IMG" -c "import fastapi, uvicorn, multipart; print('web 依赖 OK')"
 
       - name: 端到端冒烟（上传→转换→下载）
-        run: python3 .github/smoke_test.py --base http://127.0.0.1:8506
+        run: |
+          # 正式发布必须硬断言版本号：镜像 tag 说 1.0.7，/api/health 就得报 1.0.7。
+          # 早先这里只是把健康检查的 JSON 打印出来，没人会真去比对，
+          # 版本号注入没生效也一样能发出去。
+          # 手动 dev 构建时 steps.meta.outputs.ver 是 dev，镜像里也是 dev，同样对得上。
+          python3 .github/smoke_test.py --base http://127.0.0.1:8506 \
+            --expected-version "${{ steps.meta.outputs.ver }}"
 
       - name: 失败时导出容器日志
         if: failure()

@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 import struct
 import zlib
@@ -34,6 +35,36 @@ from .reader import PDFDocument, dict_get, dict_int, dict_name, dict_ref
 
 class RenderError(ValueError):
     pass
+
+
+# ── 渲染像素预算 ──────────────────────────────────────────────────────────
+# 防止异常/恶意 MediaBox 在建位图时直接吃掉几个 GB。
+#
+# 实测（scale=300dpi，即 4.17 倍）：
+#   A4          2479×3508   =  8.7M 像素 /  25 MB
+#   A5          1750×2479   =  4.3M 像素 /  12 MB
+#   漫画长图    3333×50000  =  167M 像素 / 477 MB   ← 真实场景，必须放行
+#   MediaBox×100  247916×350833 = 870 亿像素 / 248 GB  ← 这一句 bytearray 直接打死容器
+#
+# 阈值按真实长图留了余量：总像素给到 2 亿（600MB RGB24），单边 5 万。
+# 两个都能用环境变量调，NAS 内存小就往下压。
+MAX_SIDE_PX = int(os.environ.get("BOOKFORGE_MAX_SIDE_PX", "50000"))
+MAX_PIXELS = int(os.environ.get("BOOKFORGE_MAX_PIXELS", "200000000"))
+
+
+def _check_px_budget(w_px: int, h_px: int) -> None:
+    """单边 + 总像素双上限。超了抛 RenderError，由上层判任务失败。"""
+    if w_px > MAX_SIDE_PX or h_px > MAX_SIDE_PX:
+        raise RenderError(
+            f"页面太大：{w_px}×{h_px} 像素，单边上限 {MAX_SIDE_PX}。"
+            "PDF 的 MediaBox 可能异常，或者这个页面本身不适合渲染"
+            f"（可用 BOOKFORGE_MAX_SIDE_PX 调整）")
+    total = w_px * h_px
+    if total > MAX_PIXELS:
+        raise RenderError(
+            f"页面像素过多：{total / 1e6:.0f}M（{w_px}×{h_px}），"
+            f"上限 {MAX_PIXELS / 1e6:.0f}M。渲染这张图需要约 "
+            f"{total * 3 / 1048576:.0f} MB 内存（可用 BOOKFORGE_MAX_PIXELS 调整）")
 
 
 # ── 矩阵 ──────────────────────────────────────────────────────────────────
@@ -278,8 +309,17 @@ class PageRenderer:
         w_pt, h_pt = abs(x1 - x0), abs(y1 - y0)
         if w_pt <= 0 or h_pt <= 0:
             raise RenderError("页面 MediaBox 非法")
+        # MediaBox 是文档自己写的数字，不可信 —— 必须在分配位图之前先算预算。
+        # 实测 [0 0 59500 84200] 在 300dpi 下是 870 亿像素（248 GB），
+        # 不加这道检查，下面那行 bytearray 就是一次 OOM kill。
+        if not (math.isfinite(w_pt) and math.isfinite(h_pt)):
+            raise RenderError(f"页面 MediaBox 含非有限数值：{w_pt}×{h_pt}pt")
 
-        bmp = Bitmap(max(1, int(w_pt * self.scale)), max(1, int(h_pt * self.scale)))
+        w_px = max(1, int(w_pt * self.scale))
+        h_px = max(1, int(h_pt * self.scale))
+        _check_px_budget(w_px, h_px)
+
+        bmp = Bitmap(w_px, h_px)
         # 基础变换：PDF 原点在左下、位图在左上，且要乘缩放
         base = (self.scale, 0.0, 0.0, self.scale, -x0 * self.scale, -y0 * self.scale)
 
