@@ -57,16 +57,23 @@ jobs:
         run: |
           if [ -n "$INPUT_TAG" ]; then
             TAGGED="$INPUT_TAG"
-            # 手动触发不许占用正式版本号。否则手动填个 1.0.3 就能把已经发布的
-            # 那个镜像标签覆盖掉 —— 历史版本就不再是历史了。
-            # 正式版只能走 git tag：git tag v1.0.4 && git push origin v1.0.4
-            # 前后都允许 v/V 前缀：V1.2.3 这种大小写混写也一样会撞上正式版标签。
-            if [[ "$TAGGED" =~ ^[vV]?[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-              echo "::error::手动触发不能用正式版本号 '${TAGGED}'，会覆盖已有镜像标签"
-              echo "正式发布请打 git tag：git tag v1.0.4 && git push origin v1.0.4"
-              echo "手动构建请用 dev / test-* / sha-* 这类名字"
-              exit 1
-            fi
+            # 手动触发只允许开发标签 —— 用**白名单**，不用黑名单。
+            #
+            # 早先是「拒绝 SemVer 形式」（^[vV]?X.Y.Z），结果 latest / candidate /
+            # prod / LATEST 全都能绕过去。实测（2026-11-24）：
+            #   填 latest → ver=latest → 晋升步骤 docker tag ... :latest → 覆盖正式 latest
+            #   填 candidate → 覆盖候选标签，干扰正在跑的发布
+            # 黑名单永远漏一个，白名单只放行明确安全的。
+            case "$TAGGED" in
+              dev|test-*|sha-*|pr-*) ;;
+              latest|candidate)
+                echo "::error::'${TAGGED}' 是发布流程内部保留的标签，手动触发不能用"
+                exit 1 ;;
+              *)
+                echo "::error::手动触发只能用 dev / test-* / sha-* / pr-* 这类开发标签，收到 '${TAGGED}'"
+                echo "正式发布请打 git tag：git tag v1.0.11 && git push origin v1.0.11"
+                exit 1 ;;
+            esac
           elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAGGED="${GITHUB_REF#refs/tags/}"
             TAGGED="${TAGGED#v}"          # v1.0.0 → 1.0.0
@@ -84,6 +91,11 @@ jobs:
             echo "latest=" >> "$GITHUB_OUTPUT"
             echo "将要推送：${IMAGE}:${TAGGED}（不动 latest）"
           fi
+          # 候选标签绑定到本次运行 —— 并发发布不会互相覆盖。
+          # 用固定 :candidate 的话，运行 A 推完、B 也推 candidate（改写指针），
+          # A 再 pull 回来拿到的就是 B 的镜像；虽然 revision 校验能拦住，
+          # 但 A 本来正常的发布会无故失败。
+          echo "candidate=${IMAGE}:candidate-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -113,7 +125,7 @@ jobs:
           # `docker tag` + `docker push` 晋升成正式标签。tag 是本地改指针，
           # 推上去的 digest 和刚才验证的那个完全一致，不存在「验 A 发 B」。
           tags: |
-            ${{ env.IMAGE }}:candidate
+            ${{ steps.meta.outputs.candidate }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.meta.outputs.ver }}
@@ -124,7 +136,7 @@ jobs:
       - name: 从仓库拉回候选镜像
         run: |
           set -e
-          IMG="${{ env.IMAGE }}:candidate"
+          IMG="${{ steps.meta.outputs.candidate }}"
           # ⚠️ build-push-action 用的是 docker-container driver，构建结果在 builder
           # 自己的存储里，**不会**自动落到本机 Docker Engine。干净 runner 上直接
           # `docker image inspect` 会找不到 tag，后面 docker run 也没镜像可跑。
@@ -136,7 +148,7 @@ jobs:
       - name: 确认镜像就是这次提交构建的
         run: |
           set -e
-          IMG="${{ env.IMAGE }}:candidate"
+          IMG="${{ steps.meta.outputs.candidate }}"
           REV=$(docker image inspect "$IMG" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
           echo "镜像 revision = $REV"
           echo "本次提交      = ${{ github.sha }}"
@@ -147,12 +159,12 @@ jobs:
           docker run -d --name smoke -p 8506:8506 \
             -e EBOOKFORGE_DATA=/data \
             -e EBOOKFORGE_BOOK_DIR=/data/Book \
-            "${{ env.IMAGE }}:candidate"
+            "${{ steps.meta.outputs.candidate }}"
 
       - name: 镜像里该有的东西都在
         run: |
           set -e
-          IMG="${{ env.IMAGE }}:candidate"
+          IMG="${{ steps.meta.outputs.candidate }}"
           # ⚠️ 字体装在 /usr/share/fonts/truetype/noto/，不是 /app/assets/fonts/
           # （Dockerfile 是 COPY 过去的，源码目录不留在镜像里）。早先这里写错路径，
           # 镜像明明有字体也会被判失败。
@@ -183,9 +195,16 @@ jobs:
         run: |
           set -e
           IMG="${{ env.IMAGE }}"
-          SRC="$IMG:candidate"
+          SRC="${{ steps.meta.outputs.candidate }}"
           VER="${{ steps.meta.outputs.ver }}"
           LATEST="${{ steps.meta.outputs.latest }}"
+
+          # 双保险：即使前面哪道判断被绕过，这里也再确认一次 ——
+          # 只有正式 git tag 触发才允许推 latest。
+          if [ -n "$LATEST" ] && [[ "${GITHUB_REF}" != refs/tags/v* ]]; then
+            echo "::error::非 refs/tags/v* 触发却要推 latest，拒绝（GITHUB_REF=${GITHUB_REF}）"
+            exit 1
+          fi
 
           echo "验证通过的镜像："
           docker image inspect "$SRC" --format '  ID={{.Id}}'

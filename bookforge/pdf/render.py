@@ -40,16 +40,26 @@ class RenderError(ValueError):
 # ── 渲染像素预算 ──────────────────────────────────────────────────────────
 # 防止异常/恶意 MediaBox 在建位图时直接吃掉几个 GB。
 #
-# 实测（scale=300dpi，即 4.17 倍）：
-#   A4          2479×3508   =  8.7M 像素 /  25 MB
-#   A5          1750×2479   =  4.3M 像素 /  12 MB
-#   漫画长图    3333×50000  =  167M 像素 / 477 MB   ← 真实场景，必须放行
-#   MediaBox×100  247916×350833 = 870 亿像素 / 248 GB  ← 这一句 bytearray 直接打死容器
+# ⚠️ 这两个阈值只管「单页」，而且**不是内存上限** —— 实测（2026-11-24，
+# 本机 python3.12，Bitmap → bytes() → png.encode 全链路）：
 #
-# 阈值按真实长图留了余量：总像素给到 2 亿（600MB RGB24），单边 5 万。
-# 两个都能用环境变量调，NAS 内存小就往下压。
+#   像素     尺寸          真实峰值 RSS
+#   8.0M    2828×2828        112 MB    ← A4 @300dpi
+#   50M     7071×7071        631 MB
+#   100M    10000×10000     1203 MB
+#   200M    14142×14142     2347 MB    ← 默认上限，长图会摸到这个量级
+#
+# 为什么是 2.3 倍像素而不是 1 倍：Bitmap 自己一份 RGB24，
+# 编码前 bytes(bmp.buf) 再复制一份，zlib 压缩还要一层滤波缓冲。
+#
+# 所以 200M 这个默认值是给「能拿出 3GB 内存」的机器用的（NAS 常见 4-8GB）。
+# 内存小的机器把 BOOKFORGE_MAX_PIXELS 调下来，或者给容器设 memory limit 让它
+# 在超限时被 OOM kill 而不是拖垮整机。
 MAX_SIDE_PX = int(os.environ.get("BOOKFORGE_MAX_SIDE_PX", "50000"))
 MAX_PIXELS = int(os.environ.get("BOOKFORGE_MAX_PIXELS", "200000000"))
+# 分享访客的单页预算：公网来的请求不该单页吃掉 2GB。
+# 60M 像素 ≈ 750MB 峰值，够放普通漫画页和中等长图。
+SHARE_MAX_PIXELS = int(os.environ.get("BOOKFORGE_SHARE_MAX_PIXELS", "60000000"))
 
 
 def _check_px_budget(w_px: int, h_px: int) -> None:

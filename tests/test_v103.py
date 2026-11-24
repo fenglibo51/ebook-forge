@@ -240,7 +240,12 @@ class ManualTagGuardTests(unittest.TestCase):
             "GITHUB_OUTPUT": out_file.name,
             "IMAGE": "ghcr.io/fenglibo51/ebook-forge",
         })
-        r = subprocess.run(["bash", "-e", "-c", self.script], env=env,
+        # ${{ github.run_id }} / ${{ github.run_attempt }} 是 Actions 表达式，
+        # 直接喂给 bash 会报 bad substitution —— 这里按真实值替换掉
+        script = (self.script
+                  .replace("${{ github.run_id }}", "1234567")
+                  .replace("${{ github.run_attempt }}", "1"))
+        r = subprocess.run(["bash", "-e", "-c", script], env=env,
                            capture_output=True, text=True)
         produced = Path(out_file.name).read_text(encoding="utf-8")
         os.unlink(out_file.name)
@@ -253,11 +258,21 @@ class ManualTagGuardTests(unittest.TestCase):
         return "<没有 latest 这一行>"
 
     def test_manual_official_version_rejected(self):
+        # 2026-11-24 改成白名单后，错误文案从「不能用正式版本号」变成
+        # 「只能用 dev / test-* / sha-* / pr-*」。断言放宽到「被拒 + 提到开发标签」。
         for tag in ("1.0.3", "v1.0.3", "2.0.0", "V1.2.3"):
             r, _ = self._run("refs/heads/master", tag)
             self.assertNotEqual(r.returncode, 0,
                                 f"手动填 {tag} 居然通过了，会覆盖正式镜像标签")
-            self.assertIn("正式版本号", r.stdout + r.stderr)
+            self.assertIn("dev", r.stdout + r.stderr,
+                          "拒绝信息应该告诉用户能用什么标签")
+
+    def test_manual_reserved_tags_rejected(self):
+        """latest / candidate 是流程内部标签，手动触发绝对不能占。"""
+        for tag in ("latest", "candidate"):
+            r, _ = self._run("refs/heads/master", tag)
+            self.assertNotEqual(r.returncode, 0,
+                                f"手动填 {tag} 居然通过了 —— 会覆盖正式/候选标签")
 
     def test_manual_dev_like_tags_allowed(self):
         for tag in ("dev", "test-abc", "sha-1234567", "pr-42"):

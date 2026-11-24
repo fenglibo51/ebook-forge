@@ -221,7 +221,8 @@ class PublishOrderTests(unittest.TestCase):
         """build-push-action 只能推 candidate，不能推版本号或 latest。"""
         build = next(s for s in self.steps if "build-push-action" in str(s.get("uses", "")))
         tags = build["with"]["tags"]
-        self.assertIn(":candidate", tags, "构建步骤应该只推 candidate")
+        self.assertIn("steps.meta.outputs.candidate", tags,
+                      "构建步骤应该只推按运行 ID 唯一的 candidate 标签")
         self.assertNotIn("steps.meta.outputs.latest", tags,
                          "构建步骤不能直接推 latest —— 那是验证前")
         self.assertNotIn("steps.meta.outputs.ver }", tags.replace("VERSION", ""),
@@ -246,7 +247,8 @@ class PublishOrderTests(unittest.TestCase):
     def test_smoke_runs_against_candidate(self):
         """冒烟跑在 candidate 上，不是某个还没验证的正式标签。"""
         container = self.steps[self._idx("起容器")]
-        self.assertIn(":candidate", container["run"])
+        self.assertIn("steps.meta.outputs.candidate", container["run"],
+                      "起容器要用那个唯一的候选标签")
 
     def test_digest_consistency_note_present(self):
         """晋升用的是 docker tag（本地改指针），不是重新 build。"""

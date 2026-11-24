@@ -71,11 +71,20 @@ def _safe_dpi(raw: Any) -> int:
 _RENDER_LIMIT_ADMIN_DEFAULT = int(
     os.environ.get("BOOKFORGE_MAX_TOTAL_RENDER_MB", "2048")) << 20
 
+# 单页像素预算同理：默认值从环境变量算，不从会被改写的 render.MAX_PIXELS 读。
+_RENDER_PX_ADMIN_DEFAULT = int(os.environ.get("BOOKFORGE_MAX_PIXELS", "200000000"))
+
 
 def _render_limit_for(share_token: str) -> int:
     """按任务归属返回整本渲染的累计上限（字节）。"""
     from bookforge.pdf import to_comic
     return to_comic.SHARE_TOTAL_RENDER_LIMIT if share_token else _RENDER_LIMIT_ADMIN_DEFAULT
+
+
+def _page_px_for(share_token: str) -> int:
+    """按任务归属返回单页像素上限。分享访客给更严的（公网来的不该单页吃 2GB）。"""
+    from bookforge.pdf import render
+    return render.SHARE_MAX_PIXELS if share_token else _RENDER_PX_ADMIN_DEFAULT
 
 
 class OutputTooLarge(RuntimeError):
@@ -255,6 +264,7 @@ def _run(job: Job) -> None:
 
     from bookforge import convert
     from bookforge.formats import mobi as mobi_mod
+    from bookforge.pdf import render as pdf_render
     from bookforge.pdf import to_comic
 
     # 渲染兜底是模块级开关，每次任务开始时同步一次
@@ -262,6 +272,8 @@ def _run(job: Job) -> None:
     to_comic.RENDER_DPI = _safe_dpi(job.options.get("render_dpi", 200))
     # 整本渲染预算：分享访客给更严的限制（公网来的请求不该占掉半台机器）
     to_comic.TOTAL_RENDER_LIMIT = _render_limit_for(job.share_token)
+    # 单页像素预算：分享访客同样更严（200M 像素的页峰值 ~2.3GB，公网不该给这么多）
+    pdf_render.MAX_PIXELS = _page_px_for(job.share_token)
 
     for item in job.items:
         # 取消只跳过「还没开始」的文件。
